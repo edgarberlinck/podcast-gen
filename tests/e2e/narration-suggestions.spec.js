@@ -215,3 +215,104 @@ test("injectable fake provider failures are accessible, retryable and sanitized"
   await expect(alert).toContainText("We couldn’t create this suggestion");
   expect(attempts).toBe(2);
 });
+
+for (const contentLanguage of ["pt", "en"]) {
+  test(`${contentLanguage} episode preserves a pending paragraph suggestion across interface-language changes`, async ({ page }) => {
+    const sourceParagraphs = contentLanguage === "pt"
+      ? ["Primeiro parágrafo fonte.", "Segundo parágrafo fonte.", "Terceiro parágrafo fonte."]
+      : ["First source paragraph.", "Second source paragraph.", "Third source paragraph."];
+    const original = sourceParagraphs.join("\n\n");
+    const narration = contentLanguage === "pt" ? "Roteiro salvo existente." : "Existing saved narration.";
+    const fishScript = contentLanguage === "pt" ? "[calmo] Script Fish salvo." : "[calm] Saved Fish script.";
+    const created = await page.request.post(`${baseURL}/api/episodes`, {
+      data: { title: `Pending language switch ${contentLanguage}`, language: contentLanguage, original_article: original },
+    });
+    expect(created.status()).toBe(201);
+    const episode = await created.json();
+    await page.request.put(`${baseURL}/api/episodes/${episode.id}/scripts/narration`, { data: { content: narration } });
+    await page.request.put(`${baseURL}/api/episodes/${episode.id}/scripts/fish-audio`, { data: { content: fishScript } });
+
+    let requestedBody;
+    let releaseResponse;
+    let markRequestSeen;
+    const requestSeen = new Promise((resolve) => { markRequestSeen = resolve; });
+    const responseGate = new Promise((resolve) => { releaseResponse = resolve; });
+    const routePattern = `**/api/episodes/${episode.id}/narration-suggestions`;
+    await page.route(routePattern, async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      requestedBody = route.request().postDataJSON();
+      markRequestSeen();
+      await responseGate;
+      try {
+        await route.fulfill({ json: { suggestion: {
+          id: `delayed-pending-${contentLanguage}`, episode_id: episode.id, scope: "paragraph", paragraph_index: 1,
+          source_text: sourceParagraphs[1], suggested_text: "Delayed deterministic suggestion.",
+          provider: "playwright-delayed-fixture", model: "local-test", approval_status: "pending", created_at: new Date().toISOString(),
+        } } });
+      } catch { /* The browser may close the pending request if an earlier assertion fails. */ }
+    });
+
+    try {
+      await page.goto(`${baseURL}/#scripts/${episode.id}`);
+      await expect(page.locator("#interface-language")).toHaveValue(contentLanguage);
+      await expect(page.locator(".source-paragraphs")).toHaveAttribute("lang", contentLanguage);
+      await expect(page.locator("#narration-script")).toHaveValue(narration);
+      await page.getByRole("button", { name: new RegExp(`Select paragraph 2|Selecionar parágrafo 2`) }).click();
+      await page.locator('[data-action="request-suggestion"]').click();
+      await requestSeen;
+      expect(requestedBody).toEqual({ scope: "paragraph", paragraph_index: 1 });
+      const loadingCopy = contentLanguage === "pt"
+        ? "Preparando sugestão… O rascunho salvo e o original permanecem intactos."
+        : "Preparing suggestion… Your saved draft and source are unchanged.";
+      await expect(page.locator('[data-action="request-suggestion"]')).toBeDisabled();
+      await expect(page.locator('[data-action="request-suggestion"]')).toHaveText(loadingCopy);
+      await expect(page.locator("#suggestion-status")).toContainText(loadingCopy);
+      await expect(page.locator('.source-paragraph[data-index="1"]')).toHaveAttribute("aria-pressed", "true");
+      await expect(page.locator(".source-paragraphs")).toContainText(sourceParagraphs[1]);
+
+      const interfaceLanguage = contentLanguage === "pt" ? "en" : "pt";
+      await page.locator("#interface-language").selectOption(interfaceLanguage);
+      const switchedLoadingCopy = interfaceLanguage === "pt"
+        ? "Preparando sugestão… O rascunho salvo e o original permanecem intactos."
+        : "Preparing suggestion… Your saved draft and source are unchanged.";
+      await expect(page.locator("#interface-language")).toHaveValue(interfaceLanguage);
+      await expect(page.locator("html")).toHaveAttribute("lang", interfaceLanguage === "pt" ? "pt-BR" : "en");
+      await expect(page.locator('[data-action="request-suggestion"]')).toBeDisabled();
+      await expect(page.locator('[data-action="request-suggestion"]')).toHaveText(switchedLoadingCopy);
+      await expect(page.locator("#suggestion-status")).toContainText(switchedLoadingCopy);
+      await expect(page.locator(".source-paragraphs")).toHaveAttribute("lang", contentLanguage);
+      await expect(page.locator("#narration-script")).toHaveAttribute("lang", contentLanguage);
+      await expect(page.locator("#narration-script")).toHaveValue(narration);
+      await expect(page.locator('.source-paragraph[data-index="1"]')).toHaveAttribute("aria-pressed", "true");
+      for (const [index, paragraph] of sourceParagraphs.entries()) {
+        await expect(page.locator(`.source-paragraph[data-index="${index}"]`)).toContainText(paragraph);
+      }
+      expect(await getSuggestions(page.request, episode.id)).toHaveLength(0);
+      let saved = await getEpisode(page.request, episode.id);
+      expect(saved.language).toBe(contentLanguage);
+      expect(saved.original_article).toBe(original);
+      expect(saved.narration_script).toBe(narration);
+      expect(saved.fish_audio_script).toBe(fishScript);
+
+      // Return to the content-default UI language while the same request is still pending.
+      await page.locator("#interface-language").selectOption(contentLanguage);
+      await expect(page.locator('[data-action="request-suggestion"]')).toHaveText(loadingCopy);
+      await expect(page.locator('.source-paragraph[data-index="1"]')).toHaveAttribute("aria-pressed", "true");
+      await expect(page.locator(".source-paragraphs")).toHaveAttribute("lang", contentLanguage);
+      await expect(page.locator("#narration-script")).toHaveValue(narration);
+      saved = await getEpisode(page.request, episode.id);
+      expect(saved.original_article).toBe(original);
+      expect(saved.narration_script).toBe(narration);
+      expect(saved.fish_audio_script).toBe(fishScript);
+
+      releaseResponse();
+      await expect(page.getByLabel(contentLanguage === "pt" ? "Sugestão · editável" : "Suggestion · editable"))
+        .toHaveValue("Delayed deterministic suggestion.");
+      await expect(page.locator(".suggestion-compare article")).toContainText(sourceParagraphs[1]);
+      expect(await getSuggestions(page.request, episode.id)).toHaveLength(0);
+    } finally {
+      releaseResponse();
+      await page.unroute(routePattern);
+    }
+  });
+}
