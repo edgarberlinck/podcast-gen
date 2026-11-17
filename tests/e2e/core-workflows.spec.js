@@ -211,3 +211,75 @@ test("Portuguese and English drafts, voices and three text versions persist inde
   const revisionsResponse = await page.request.get(`${baseURL}/api/episodes/${portugueseId}/revisions`);
   expect((await revisionsResponse.json()).revisions[0].content).toBe(portugueseOriginal);
 });
+
+test("Portuguese paragraph suggestions stay separate; saved Fish script approval is explicit and versioned", async ({ page }) => {
+  const original = "Source paragraph one.\n\nSource paragraph two.\n\nSource paragraph three.";
+  const narration = "Draft paragraph one.\n\nDraft paragraph two.\n\nDraft paragraph three.";
+  const createdResponse = await page.request.post(`${baseURL}/api/episodes`, {
+    data: { title: "Phase 3 Portuguese review", language: "pt", original_article: original },
+  });
+  const episode = await createdResponse.json();
+  await page.request.put(`${baseURL}/api/episodes/${episode.id}/scripts/narration`, { data: { content: narration } });
+  let requested;
+  await page.route("**/narration-suggestions", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    requested = route.request().postDataJSON();
+    await route.fulfill({ json: { suggestion: {
+      id: "fake-suggestion-1", episode_id: episode.id, scope: requested.scope,
+      paragraph_index: requested.paragraph_index, source_text: "Source paragraph two.",
+      suggested_text: "Reviewed second paragraph.", provider: "deterministic-e2e", model: "local-test",
+      approval_status: "pending", created_at: new Date().toISOString(),
+    } } });
+  });
+  await page.goto(`${baseURL}/#scripts/${episode.id}`);
+  await expect(page.getByRole("heading", { name: "Preparar roteiro de narração" })).toBeVisible();
+  await expect(page.getByLabel("Artigo original · read-only")).toHaveValue(original);
+  await page.getByRole("button", { name: /Selecionar parágrafo 2/ }).click();
+  await page.getByRole("button", { name: "✦ Gerar sugestão" }).click();
+  await expect.poll(() => requested).toEqual({ scope: "paragraph", paragraph_index: 1 });
+  await expect(page.getByLabel("Sugestão · editável")).toHaveValue("Reviewed second paragraph.");
+  await expect(page.getByLabel("Artigo original · read-only")).toHaveValue(original);
+  await page.getByRole("button", { name: "Usar no rascunho" }).click();
+  await expect(page.getByLabel("Roteiro de narração editável")).toHaveValue(
+    "Draft paragraph one.\n\nReviewed second paragraph.\n\nDraft paragraph three.",
+  );
+  await page.getByRole("button", { name: "Salvar roteiros" }).click();
+  await expect(page.getByRole("status")).toContainText("Roteiros salvos em versões independentes");
+
+  const fishScript = "[measured]Approved text, version one.";
+  await page.getByLabel("Script Fish Audio editável").fill(fishScript);
+  await page.getByRole("button", { name: "Salvar roteiros" }).click();
+  await page.getByRole("button", { name: "Aprovar esta versão salva" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("button", { name: "Sim, aprovar esta versão" }).click();
+  await expect(page.getByText("Esta versão salva exata está aprovada")).toBeVisible();
+  let saved = await (await page.request.get(`${baseURL}/api/episodes/${episode.id}`)).json();
+  expect(saved.fish_audio_approved_sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(saved.original_article).toBe(original);
+  expect(saved.narration_script).toBe("Draft paragraph one.\n\nReviewed second paragraph.\n\nDraft paragraph three.");
+
+  await page.getByLabel("Script Fish Audio editável").fill(`${fishScript} edited`);
+  await page.getByRole("button", { name: "Salvar roteiros" }).click();
+  await expect(page.getByText("Aguardando sua decisão")).toBeVisible();
+  saved = await (await page.request.get(`${baseURL}/api/episodes/${episode.id}`)).json();
+  expect(saved.fish_audio_approved_sha256).toBeNull();
+});
+
+test("English narration UI exposes safe provider errors without showing technical details", async ({ page }) => {
+  const response = await page.request.post(`${baseURL}/api/episodes`, {
+    data: { title: "English suggestion error", language: "en", original_article: "An English source paragraph." },
+  });
+  const episode = await response.json();
+  await page.route("**/narration-suggestions", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({ status: 502, json: { error: { code: "suggestion_provider_error", message: "secret token and provider trace" } } });
+    } else await route.continue();
+  });
+  await page.goto(`${baseURL}/#scripts/${episode.id}`);
+  await expect(page.getByRole("heading", { name: "Prepare the narration draft" })).toBeVisible();
+  await page.getByRole("button", { name: "✦ Request suggestion" }).click();
+  await expect(page.getByRole("alert")).toContainText("We couldn’t create this suggestion");
+  await expect(page.getByRole("alert")).not.toContainText("secret token");
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+  await expect(page.getByLabel("Original article · read-only")).toHaveValue("An English source paragraph.");
+});

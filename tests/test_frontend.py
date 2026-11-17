@@ -29,7 +29,7 @@ def test_local_app_serves_interface_assets(tmp_path):
     assert b"/static/styles.css" in body
     for name, media_type, expected in [
         ("api.js", "text/javascript; charset=utf-8", b"saveOriginal"),
-        ("app.js", "text/javascript; charset=utf-8", b"saveScripts"),
+        ("app.js", "text/javascript; charset=utf-8", b"requestSuggestion"),
         ("styles.css", "text/css; charset=utf-8", b"@media(max-width:720px)"),
     ]:
         status, headers, body = request(app, f"/static/{name}")

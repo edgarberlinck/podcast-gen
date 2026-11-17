@@ -1,5 +1,7 @@
+import hashlib
 import io
 import json
+import sqlite3
 from urllib.parse import urlsplit
 from wsgiref.util import setup_testing_defaults
 
@@ -87,6 +89,30 @@ def test_original_requires_explicit_confirmation_and_preserves_revision(client):
     assert client("GET", f"/api/episodes/{episode['id']}/original")[2]["content"] == exact_text
     assert client("PUT", path, {"content": "ignored", "confirm_edit": True, "narration": "no"})[2]["error"]["code"] == "unknown_fields"
     assert client("GET", f"/api/episodes/{episode['id']}/revisions")[2]["revisions"][0]["content"] == "Original text"
+
+
+def test_fish_script_approval_is_explicit_saved_version_specific_and_resets_on_edit(client, tmp_path):
+    episode = create_episode(client)
+    script_path = f"/api/episodes/{episode['id']}/scripts/fish-audio"
+    approval_path = f"/api/episodes/{episode['id']}/scripts/fish-audio-approval"
+    script = "[measured]Exact saved script."
+    assert client("POST", approval_path, {"content": script, "confirm_approval": True})[2]["error"]["code"] == "script_not_saved"
+    assert client("PUT", script_path, {"content": script})[0] == 200
+    assert client("POST", approval_path, {"content": script})[2]["error"]["code"] == "confirmation_required"
+    status, _, approved = client("POST", approval_path, {"content": script, "confirm_approval": True})
+    assert status == 200
+    assert approved["fish_audio_approved_sha256"] == hashlib.sha256(script.encode()).hexdigest()
+    assert approved["fish_audio_approved_at"]
+    assert client("POST", approval_path, {"content": "different", "confirm_approval": True})[2]["error"]["code"] == "script_not_saved"
+    assert client("PUT", script_path, {"content": script})[2]["fish_audio_approved_sha256"] == approved["fish_audio_approved_sha256"]
+    changed = client("PUT", script_path, {"content": script + " Edited"})[2]
+    assert changed["fish_audio_approved_sha256"] is None
+    assert changed["fish_audio_approved_at"] is None
+    assert client("POST", approval_path, {"content": "", "confirm_approval": True})[2]["error"]["code"] == "empty_script"
+    restarted = create_app(tmp_path)
+    _, _, restored = request_app(restarted, "GET", f"/api/episodes/{episode['id']}")
+    assert restored["fish_audio_script"] == script + " Edited"
+    assert restored["fish_audio_approved_sha256"] is None
 
 
 def test_scripts_cannot_write_original_field(client):
@@ -183,6 +209,20 @@ def test_store_api_validation_and_deletion(tmp_path):
     assert not episode_path.exists()
     with pytest.raises(ApiError, match="Episode not found"):
         studio.get_episode(episode["id"])
+
+
+def test_approval_columns_are_added_to_existing_episode_databases(tmp_path):
+    database = tmp_path / "studio.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("""CREATE TABLE episodes (
+            id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+            language TEXT NOT NULL, status TEXT NOT NULL, original_article TEXT NOT NULL DEFAULT '',
+            narration_script TEXT NOT NULL DEFAULT '', fish_audio_script TEXT NOT NULL DEFAULT '',
+            selected_voice_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+    Studio(tmp_path)
+    with sqlite3.connect(database) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(episodes)")}
+    assert {"fish_audio_approved_sha256", "fish_audio_approved_at"} <= columns
 
 
 def test_database_and_files_are_created_with_local_structure(tmp_path):
