@@ -155,9 +155,9 @@ class Studio:
         language = body.get("language", "pt")
         status = body.get("status", "Draft")
         original = validate_content(body.get("original_article", ""), "original_article")
-        if language not in LANGUAGES:
+        if not isinstance(language, str) or language not in LANGUAGES:
             raise ApiError(400, "invalid_language", "language must be 'pt' or 'en'.")
-        if status not in STATUSES:
+        if not isinstance(status, str) or status not in STATUSES:
             raise ApiError(400, "invalid_status", "Unsupported episode status.")
         episode_id, stamp = str(uuid.uuid4()), now()
         path = self.episodes_dir / episode_id
@@ -196,11 +196,11 @@ class Studio:
         if "description" in body:
             values["description"] = validate_text(body["description"], "description", maximum=10_000)
         if "language" in body:
-            if body["language"] not in LANGUAGES:
+            if not isinstance(body["language"], str) or body["language"] not in LANGUAGES:
                 raise ApiError(400, "invalid_language", "language must be 'pt' or 'en'.")
             values["language"] = body["language"]
         if "status" in body:
-            if body["status"] not in STATUSES:
+            if not isinstance(body["status"], str) or body["status"] not in STATUSES:
                 raise ApiError(400, "invalid_status", "Unsupported episode status.")
             values["status"] = body["status"]
         if "selected_voice_id" in body:
@@ -267,11 +267,11 @@ class Studio:
         voice_type = body.get("voice_type", "external")
         availability = body.get("availability", "unknown")
         description = validate_text(body.get("description", ""), "description", maximum=5000)
-        if language not in LANGUAGES:
+        if not isinstance(language, str) or language not in LANGUAGES:
             raise ApiError(400, "invalid_language", "language must be 'pt' or 'en'.")
-        if voice_type not in VOICE_TYPES:
+        if not isinstance(voice_type, str) or voice_type not in VOICE_TYPES:
             raise ApiError(400, "invalid_voice_type", "voice_type must be external, own, or other.")
-        if availability not in VOICE_STATUSES:
+        if not isinstance(availability, str) or availability not in VOICE_STATUSES:
             raise ApiError(400, "invalid_availability", "availability must be available, unavailable, or unknown.")
         voice_id, stamp = str(uuid.uuid4()), now()
         try:
@@ -424,10 +424,8 @@ def create_app(data_dir: str | Path | None = None):
                 if len(parts) == 4 and parts[3] == "files" and method == "POST":
                     query = parse_qs(environ.get("QUERY_STRING", ""))
                     filename = query.get("filename", [None])[0]
-                    size = int(environ.get("CONTENT_LENGTH") or 0)
-                    if size > MAX_FILE_BYTES:
-                        raise ApiError(413, "file_too_large", "Audio file exceeds the 500 MiB limit.")
-                    body = environ["wsgi.input"].read(size)
+                    body = read_body(environ, MAX_FILE_BYTES, "file_too_large",
+                                     "Audio file exceeds the 500 MiB limit.")
                     file = studio.store_file(episode_id, filename, environ.get("CONTENT_TYPE", ""), body)
                     return json_response(start_response, 201, file)
             if len(parts) == 3 and parts[:2] == ["api", "voices"] and method == "GET":
@@ -451,14 +449,33 @@ def create_app(data_dir: str | Path | None = None):
     return app
 
 
-def read_json(environ):
+def read_body(environ, maximum: int, too_large_code: str, too_large_message: str) -> bytes:
+    """Read only the declared WSGI body, never an unbounded or negative size."""
+    length = environ.get("CONTENT_LENGTH")
+    # WSGI permits an absent/empty length, meaning no readable request body.
+    if length is None or length == "":
+        length = "0"
+    if not isinstance(length, str) or re.fullmatch(r"[0-9]+", length) is None:
+        raise ApiError(400, "invalid_length", "Content-Length must be a non-negative decimal integer.")
     try:
-        size = int(environ.get("CONTENT_LENGTH") or 0)
+        size = int(length)
     except ValueError:
         raise ApiError(400, "invalid_length", "Invalid Content-Length.") from None
-    if size > MAX_JSON_BYTES:
-        raise ApiError(413, "request_too_large", "JSON request exceeds the 2 MiB limit.")
-    raw = environ["wsgi.input"].read(size)
+    if size > maximum:
+        raise ApiError(413, too_large_code, too_large_message)
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = environ["wsgi.input"].read(min(remaining, 64 * 1024))
+        if not chunk:
+            raise ApiError(400, "invalid_length", "Request body is shorter than Content-Length.")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def read_json(environ):
+    raw = read_body(environ, MAX_JSON_BYTES, "request_too_large", "JSON request exceeds the 2 MiB limit.")
     if not raw:
         return {}
     value = json.loads(raw.decode("utf-8"))
