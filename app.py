@@ -15,6 +15,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote
 from wsgiref.simple_server import make_server
 
+from narration import SuggestionError, provider_from_environment, source_digest
+
 LOG = logging.getLogger("codigo_cicatriz")
 LANGUAGES = {"pt", "en"}
 STATUSES = {
@@ -110,7 +112,16 @@ class Studio:
                     generation_id TEXT NOT NULL, filename TEXT NOT NULL, media_type TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS narration_suggestions (
+                    id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+                    scope TEXT NOT NULL CHECK(scope IN ('article','paragraph')),
+                    paragraph_index INTEGER, source_text TEXT NOT NULL, source_sha256 TEXT NOT NULL,
+                    suggested_text TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+                    approval_status TEXT NOT NULL DEFAULT 'pending' CHECK(approval_status='pending'),
+                    created_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_episodes_updated ON episodes(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_suggestions_episode ON narration_suggestions(episode_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_files_episode ON files(episode_id, created_at DESC);
             """)
 
@@ -253,6 +264,70 @@ class Studio:
         LOG.info("Updated %s script for episode %s", kind, episode["id"])
         return self.get_episode(episode["id"])
 
+    def create_narration_suggestion(self, episode_id, body, provider):
+        allowed = {"scope", "paragraph_index"}
+        unknown = set(body) - allowed
+        if unknown:
+            raise ApiError(400, "unknown_fields", "Unsupported narration-suggestion fields: " + ", ".join(sorted(unknown)))
+        scope = body.get("scope")
+        if not isinstance(scope, str) or scope not in {"article", "paragraph"}:
+            raise ApiError(400, "invalid_scope", "scope must be 'article' or 'paragraph'.")
+        if scope == "article" and "paragraph_index" in body:
+            raise ApiError(400, "invalid_field", "paragraph_index is only valid for paragraph suggestions.")
+        if scope == "paragraph":
+            index = body.get("paragraph_index")
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                raise ApiError(400, "invalid_field", "paragraph_index must be a non-negative zero-based integer.")
+        else:
+            index = None
+
+        episode = self.get_episode(episode_id)
+        original = episode["original_article"]
+        if scope == "article":
+            source = original
+        else:
+            paragraphs = re.split(r"\r?\n[ \t]*\r?\n", original)
+            if index >= len(paragraphs) or not paragraphs[index].strip():
+                raise ApiError(400, "invalid_field", "paragraph_index does not identify a non-empty paragraph.")
+            source = paragraphs[index]
+        if not source.strip():
+            raise ApiError(400, "empty_source", "The original article has no text to prepare.")
+
+        try:
+            suggestion = provider.suggest(source, language=episode["language"], scope=scope)
+            suggestion = validate_content(suggestion, "suggested_text")
+            if not suggestion.strip():
+                raise SuggestionError("LLM provider returned an empty suggestion.")
+            provider_name = validate_text(provider.name, "provider", required=True, maximum=100)
+            model = validate_text(provider.model, "model", required=True, maximum=200)
+        except SuggestionError as exc:
+            raise ApiError(502, "suggestion_provider_error", str(exc)) from None
+        except ApiError:
+            raise
+        except Exception:
+            # Provider exceptions may contain credentials or source text. Keep
+            # the local log and public response free of exception details.
+            LOG.error("Narration suggestion provider failed for episode %s", episode["id"])
+            raise ApiError(502, "suggestion_provider_error", "Narration suggestion provider failed.") from None
+
+        suggestion_id, stamp = str(uuid.uuid4()), now()
+        record = {"id": suggestion_id, "episode_id": episode["id"], "scope": scope,
+                  "paragraph_index": index, "source_text": source, "source_sha256": source_digest(source),
+                  "suggested_text": suggestion, "provider": provider_name, "model": model,
+                  "approval_status": "pending", "created_at": stamp}
+        with self.connect() as db:
+            db.execute("""INSERT INTO narration_suggestions
+                (id,episode_id,scope,paragraph_index,source_text,source_sha256,suggested_text,provider,model,approval_status,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""", tuple(record.values()))
+        return record
+
+    def list_narration_suggestions(self, episode_id):
+        episode = self.get_episode(episode_id)
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM narration_suggestions WHERE episode_id=? ORDER BY created_at DESC,id DESC",
+                              (episode["id"],)).fetchall()
+        return [dict(row) for row in rows]
+
     def list_revisions(self, episode_id):
         episode = self.get_episode(episode_id)
         with self.connect() as db:
@@ -374,8 +449,8 @@ class Studio:
                 "published_episodes": by_status.get("Published", 0), "by_status": by_status, "recent_episodes": recent}
 
 
-def create_app(data_dir: str | Path | None = None):
-    """Return a dependency-free WSGI app. Override data_dir for tests or local installs."""
+def create_app(data_dir: str | Path | None = None, suggestion_provider=None):
+    """Return the WSGI app; optionally inject a provider for deterministic tests."""
     studio = Studio(data_dir or os.environ.get("STUDIO_DATA_DIR", "data"))
 
     def json_response(start_response, status, value, headers=()):
@@ -433,6 +508,19 @@ def create_app(data_dir: str | Path | None = None):
                     return json_response(start_response, 200, {"content": studio.get_episode(episode_id)["original_article"]})
                 if len(parts) == 4 and parts[3] == "revisions" and method == "GET":
                     return json_response(start_response, 200, {"revisions": studio.list_revisions(episode_id)})
+                if len(parts) == 4 and parts[3] == "narration-suggestions" and method == "GET":
+                    return json_response(start_response, 200,
+                                         {"suggestions": studio.list_narration_suggestions(episode_id)})
+                if len(parts) == 4 and parts[3] == "narration-suggestions" and method == "POST":
+                    try:
+                        provider = suggestion_provider if suggestion_provider is not None else provider_from_environment()
+                    except SuggestionError as exc:
+                        raise ApiError(503, "suggestion_provider_unavailable", str(exc)) from None
+                    if provider is None:
+                        raise ApiError(503, "suggestion_provider_unavailable",
+                                       "Configure LLM_API_KEY on the local server to enable narration suggestions.")
+                    record = studio.create_narration_suggestion(episode_id, read_json(environ), provider)
+                    return json_response(start_response, 201, {"suggestion": record})
                 if len(parts) == 5 and parts[3] == "scripts" and method == "PUT":
                     return json_response(start_response, 200, studio.update_script(episode_id, parts[4], read_json(environ)))
                 if len(parts) == 4 and parts[3] == "files" and method == "GET":
