@@ -384,10 +384,26 @@ def create_app(data_dir: str | Path | None = None):
         start_response(f"{status} {HTTPStatus(status).phrase}", response_headers)
         return [payload]
 
+    def static_response(start_response, asset):
+        content_types = {"index.html": "text/html; charset=utf-8", "styles.css": "text/css; charset=utf-8",
+                         "api.js": "text/javascript; charset=utf-8", "app.js": "text/javascript; charset=utf-8"}
+        payload = (Path(__file__).parent / "static" / asset).read_bytes()
+        headers = [("Content-Type", content_types[asset]), ("Content-Length", str(len(payload))),
+                   ("Cache-Control", "no-cache"), ("X-Content-Type-Options", "nosniff")]
+        start_response(f"200 {HTTPStatus.OK.phrase}", headers)
+        return [payload]
+
     def app(environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET").upper()
         path = unquote(environ.get("PATH_INFO", "/")).rstrip("/") or "/"
         try:
+            if path == "/" and method == "GET":
+                return static_response(start_response, "index.html")
+            if path.startswith("/static/") and method == "GET":
+                asset = path.removeprefix("/static/")
+                if asset not in {"styles.css", "api.js", "app.js"}:
+                    return json_response(start_response, 404, {"error": {"code": "not_found", "message": "Asset not found."}})
+                return static_response(start_response, asset)
             if path == "/health" and method == "GET":
                 return json_response(start_response, 200, {"status": "ok"})
             if path == "/api/dashboard" and method == "GET":

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17332d">
+  <title>Código &amp; Cicatriz — Estúdio local</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script defer src="/static/api.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#view">Pular para o conteúdo</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Navegação principal">
+      <a class="brand" href="#dashboard" aria-label="Código & Cicatriz, visão geral">
+        <span class="brand-mark" aria-hidden="true">C</span><span>CÓDIGO &amp;<br>CICATRIZ</span>
+      </a>
+      <p class="sidebar-kicker">ESTÚDIO LOCAL</p>
+      <nav class="primary-nav">
+        <a href="#dashboard" data-nav="dashboard"><span aria-hidden="true">◫</span> Visão geral</a>
+        <a href="#episodes" data-nav="episodes"><span aria-hidden="true">▤</span> Episódios</a>
+        <a href="#voices" data-nav="voices"><span aria-hidden="true">◉</span> Biblioteca de vozes</a>
+      </nav>
+      <div class="local-note"><span class="local-dot" aria-hidden="true"></span><strong>DADOS NO DISPOSITIVO</strong><p>Seu estúdio permanece no seu computador.</p></div>
+      <p class="sidebar-footer">v0.2 · núcleo editorial</p>
+    </aside>
+    <main id="main-content" class="main-content" tabindex="-1">
+      <header class="topbar"><p id="breadcrumb">Estúdio / Visão geral</p><span class="local-badge"><span aria-hidden="true">●</span> Local</span></header>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <section id="view" aria-live="off"><div class="loading" role="status">Carregando seu estúdio…</div></section>
+    </main>
+  </div>
+  <input id="article-import" type="file" accept=".txt,.md,text/plain,text/markdown" hidden aria-label="Importar artigo de texto">
+  <script type="text/template" id="screen-templates"></script>
+</body>
+</html>

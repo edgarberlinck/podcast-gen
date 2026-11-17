@@ -72,6 +72,44 @@ Maximum JSON body is 2 MiB. Maximum audio file size is 500 MiB. Supported extens
 - `GET /api/dashboard` → total, draft, editorial-review, published counts, status counts, and up to 10 recent episodes.
 - `GET /health` → `{"status":"ok"}`.
 
+## Local web interface
+
+The Phase 2 browser UI is served by the same local-only Python server. Start it with `python app.py`, then open `http://127.0.0.1:8000/`. Keep it bound to loopback; the API has no authentication and is not intended to be exposed to a network. The interface assets are local files in `static/` and require no JavaScript packages, build step, external fonts, or cloud services.
+
+The responsive interface provides:
+
+- A dashboard with episode, draft, editorial-review, and locally marked published counts, plus the latest saved episodes.
+- Search and status/language filters for the episode list; episodes reopen by selecting their title.
+- Portuguese (Brazil) or English content language, title, description, and article entry. Paste directly or import a UTF-8 `.txt`/`.md` article (100,000 character limit).
+- A deliberately protected original article on existing episodes. The user must first choose **Edit original article** and confirm intent; saving a changed original asks for a second confirmation and calls only the confirmed original endpoint. Previous article text remains available in the backend revision history. Creating a new episode saves its initial article as its first source version.
+- Independent, manually editable narration and Fish Audio script panels beside a read-only original for comparison. Each derived save uses its own script endpoint; derived editor actions never call the original route.
+- A local voice library for display name, Fish Audio identifier, language, description, type, and declared availability, with episode voice selection filtered by content language.
+- Loading, empty, API/network error, saved, and validation feedback, semantic labels, keyboard-accessible controls, and narrow-screen responsive layouts.
+
+### Local checks
+
+Run these exact commands from the repository root:
+
+```sh
+python -m pip install pytest pytest-cov ruff
+python -m pytest --cov=app --cov-report=term-missing
+python -m ruff check .
+node --test tests/frontend_api.test.js
+node --check static/api.js
+node --check static/app.js
+```
+
+Python uses the standard library at runtime. Node.js is needed only for the dependency-free JavaScript API client tests and syntax checks. The browser UI is served directly from the Python app; no npm install/build is required.
+
+### UI integration assumptions and boundaries
+
+- The backend dashboard contract has counts and recent episodes, but no event/activity feed or generated-audio approval metric. The UI therefore presents recent episode updates as recent activity, uses the API's combined editorial/audio-review count, and does not invent an audio-approval count.
+- Voice records are local user-entered metadata. Availability is descriptive only; no Fish Audio request or identifier validation occurs.
+- The published count is a local status label, not evidence that content was sent to any external platform.
+- Import accepts text/Markdown files only. Audio upload/library management remains an API capability but is not surfaced as an audio generation/review workflow in this UI phase.
+- The UI labels are Portuguese; article text may be Portuguese or English. Dates and word-count labels are presented in Portuguese locale.
+- The interface uses the API's existing 100,000-character limit for each manuscript field. There is no autosave; use the explicit save controls before navigating away.
+
 ## Out of scope
 
-There is no UI in this backend ticket, AI narration, Fish Audio integration, Transistor integration, cloud storage, or automatic publishing. The Fish Audio model and tag vocabulary are not validated here. Audio generation, approval, and publication require later implementation and explicit user workflows.
+There is no AI narration, Fish Audio integration, Transistor integration, cloud storage, or automatic publishing. The Fish Audio model and tag vocabulary are not validated here. Audio generation, approval, and publication require later implementation and explicit user workflows.
