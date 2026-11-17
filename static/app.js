@@ -303,7 +303,7 @@
       status.innerHTML = `${h(strings.safeError)} <button type="button" class="button secondary small" data-action="retry-suggestion">${h(strings.retry)}</button>`;
     } else {
       status.removeAttribute("role");
-      status.textContent = busy ? strings.loading : "";
+      status.textContent = busy ? strings.loading : scriptReview.selectedSuggestion ? strings.suggestion : "";
     }
     view.querySelectorAll('input[name="suggestion-scope"]').forEach((input) => { input.checked = input.value === scriptReview.scope; });
     view.querySelectorAll(".source-paragraph").forEach((button) => {
