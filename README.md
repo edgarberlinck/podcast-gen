@@ -134,7 +134,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-The suite covers dashboard loading/empty/error-and-retry states, semantic landmarks/labels, 375px responsive layout, Portuguese and English episode workflows, voice metadata, separate scripts, deliberate original edits, revision persistence/restart, deterministic whole-article and selected-paragraph suggestion review, paragraph preservation, safe provider errors, and explicit exact-version approval/reset. The suggestion response is intercepted with a deterministic test fixture; no LLM credentials or live provider are used. The responsive assertion checks horizontal overflow at one narrow viewport; this is not a full WCAG audit or a cross-browser matrix.
+The Chromium suite covers dashboard loading/empty/error-and-retry states, semantic landmarks/labels, responsive layout, Portuguese and English episode workflows, voice metadata, separate scripts, deliberate original edits, revision persistence/restart, article/paragraph suggestion scopes and source text, paragraph preservation, explicit editing/use/save, exact-script approval/reset, and persistence across a real local server restart. A test-only WSGI harness injects a deterministic fake into the actual provider boundary for successful and failing service requests; the separate unconfigured-provider test runs against the real app with `LLM_API_KEY` explicitly empty. Assertions verify pending records and unchanged article/scripts before deliberate actions, and verify provider/credential sentinels do not appear in UI or API errors. A delayed browser fixture also verifies PT/EN interface switching while paragraph requests remain pending on both PT and EN content episodes, preserving localized loading copy, source language/text, paragraph selection, and saved narration/Fish scripts. No live LLM credentials or requests are used. The responsive assertion checks horizontal overflow at a narrow viewport; this is not a full WCAG audit or a cross-browser matrix.
 
 Local verification after PR #6 review fixes:
 
@@ -143,7 +143,11 @@ Local verification after PR #6 review fixes:
 - `npm ci`, `npm test`: passed, 9 Node tests (5 API and 4 jsdom UI unit tests).
 - `node --experimental-test-coverage --test tests/*.test.js`: API client 100% line coverage; whole `static/app.js` 55.05% from the focused unit tests alone. This is below the 80% target for that entire legacy UI file; browser E2E exercises additional paths but is not included in this unit metric.
 - `node --check static/api.js`, `node --check static/app.js`, `git diff --check`: passed.
-- `npm run test:e2e`: 6 Chromium tests passed against the actual loopback app. Includes both directions of independent language selection on PT/EN episodes, mobile narration/Fish stage visibility, focus, draft preservation, no mutation on navigation, and save-before-approval.
+- `npm ci`: passed; 31 development packages installed, 0 reported vulnerabilities.
+- `npx playwright install chromium`: passed.
+- `npm run test:e2e -- --grep "pending paragraph suggestion"`: 2 Chromium tests passed for pending-state interface switching on PT and EN content episodes.
+- `npm run test:e2e`: 11 Chromium tests passed locally. Includes 2 narration service/UI tests using an injected deterministic provider fake and actual app API, an actual unconfigured-provider API/UI test, mocked intercepted error/loading and locale-switch cases, scope/index/source validation, preservation of all three texts before deliberate edits, persistence of pending suggestions and approval across server restart, manual edit/use/save, exact-script approval/reset, and PT/EN navigation behavior.
+- No live LLM provider was configured or called. Successful suggestion output came from a local deterministic fake; pending locale-state behavior and some error/loading paths used delayed/browser intercept fixtures. No LLM output quality was evaluated and no credentials were sent to an external provider.
 
 No live LLM provider was called. These are local results, not CI or deployment evidence. No remote QA deployment, non-Chromium browser, full WCAG audit, Fish Audio generation, or publishing integration was exercised.
 
@@ -169,4 +173,4 @@ No live LLM provider was called. These are local results, not CI or deployment e
 
 ## Out of scope
 
-No Fish Audio calls, audio generation/uploads, Transistor integration, cloud storage, or publishing are implemented. The service prompts for faithful adaptation but does not fact-check or guarantee output quality. Its verified documentation does not establish a complete fixed cue vocabulary, so tag compatibility is not validated. No live LLM provider was called during local tests; suggestion UI E2E uses a deterministic intercepted response, and provider error behavior uses a mocked failure.
+No Fish Audio calls, audio generation/uploads, Transistor integration, cloud storage, or publishing are implemented. The service prompts for faithful adaptation but does not fact-check or guarantee output quality. Its verified documentation does not establish a complete fixed cue vocabulary, so tag compatibility is not validated. No live LLM provider was called during local tests; E2E suggestion behavior uses deterministic browser fixtures and an injected local provider fake, while provider-unconfigured behavior uses the real local API without a configured key.
