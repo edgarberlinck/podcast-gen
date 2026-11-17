@@ -47,6 +47,15 @@
         if (!route) throw new Error("Tipo de roteiro desconhecido.");
         return send(`/api/episodes/${encodeURIComponent(id)}/scripts/${route}`, json("PUT", { content }));
       },
+      narrationSuggestions: (id) => send(`/api/episodes/${encodeURIComponent(id)}/narration-suggestions`),
+      requestNarrationSuggestion: (id, scope, paragraphIndex) => {
+        const body = scope === "paragraph" ? { scope, paragraph_index: paragraphIndex } : { scope };
+        return send(`/api/episodes/${encodeURIComponent(id)}/narration-suggestions`, json("POST", body));
+      },
+      approveFishScript: (id, content, confirmed) => {
+        if (confirmed !== true) throw new Error("A confirmação explícita é necessária para aprovar o script Fish Audio.");
+        return send(`/api/episodes/${encodeURIComponent(id)}/scripts/fish-audio-approval`, json("POST", { content, confirm_approval: true }));
+      },
       voices: () => send("/api/voices"),
       registerVoice: (value) => send("/api/voices", json("POST", value)),
     });

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -94,6 +95,7 @@ class Studio:
                     language TEXT NOT NULL CHECK(language IN ('pt','en')),
                     status TEXT NOT NULL, original_article TEXT NOT NULL DEFAULT '',
                     narration_script TEXT NOT NULL DEFAULT '', fish_audio_script TEXT NOT NULL DEFAULT '',
+                    fish_audio_approved_sha256 TEXT, fish_audio_approved_at TEXT,
                     selected_voice_id TEXT REFERENCES voices(id) ON DELETE SET NULL,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
@@ -124,6 +126,11 @@ class Studio:
                 CREATE INDEX IF NOT EXISTS idx_suggestions_episode ON narration_suggestions(episode_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_files_episode ON files(episode_id, created_at DESC);
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(episodes)")}
+            if "fish_audio_approved_sha256" not in columns:
+                db.execute("ALTER TABLE episodes ADD COLUMN fish_audio_approved_sha256 TEXT")
+            if "fish_audio_approved_at" not in columns:
+                db.execute("ALTER TABLE episodes ADD COLUMN fish_audio_approved_at TEXT")
 
     def _episode_dir(self, episode_id: str) -> Path:
         # IDs originate from the DB and are UUIDs; never use caller paths.
@@ -260,8 +267,38 @@ class Studio:
         stamp = now()
         self._atomic_text(self._episode_dir(episode["id"]) / filename, content)
         with self.connect() as db:
-            db.execute(f"UPDATE episodes SET {column}=?,updated_at=? WHERE id=?", (content, stamp, episode["id"]))
+            if kind == "fish-audio":
+                db.execute("""UPDATE episodes SET fish_audio_script=?, updated_at=?,
+                    fish_audio_approved_sha256=CASE WHEN fish_audio_script != ? THEN NULL ELSE fish_audio_approved_sha256 END,
+                    fish_audio_approved_at=CASE WHEN fish_audio_script != ? THEN NULL ELSE fish_audio_approved_at END
+                    WHERE id=?""", (content, stamp, content, content, episode["id"]))
+            else:
+                db.execute(f"UPDATE episodes SET {column}=?,updated_at=? WHERE id=?", (content, stamp, episode["id"]))
         LOG.info("Updated %s script for episode %s", kind, episode["id"])
+        return self.get_episode(episode["id"])
+
+    def approve_fish_script(self, episode_id, body):
+        unknown = set(body) - {"content", "confirm_approval"}
+        if unknown:
+            raise ApiError(400, "unknown_fields", "Unsupported script-approval fields: " + ", ".join(sorted(unknown)))
+        if body.get("confirm_approval") is not True:
+            raise ApiError(400, "confirmation_required", "Explicit confirmation is required to approve this Fish Audio script.")
+        content = validate_content(body.get("content"), "content")
+        if not content.strip():
+            raise ApiError(400, "empty_script", "A saved Fish Audio script is required for approval.")
+        episode = self.get_episode(episode_id)
+        stamp = now()
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT fish_audio_script FROM episodes WHERE id=?", (episode["id"],)).fetchone()
+            if row is None:
+                raise ApiError(404, "not_found", "Episode not found.")
+            if row["fish_audio_script"] != content:
+                raise ApiError(409, "script_not_saved", "Save this exact Fish Audio script before approving it.")
+            db.execute("UPDATE episodes SET fish_audio_approved_sha256=?,fish_audio_approved_at=?,updated_at=? WHERE id=?",
+                       (digest, stamp, stamp, episode["id"]))
+        LOG.info("Explicitly approved Fish Audio script version for episode %s", episode["id"])
         return self.get_episode(episode["id"])
 
     def create_narration_suggestion(self, episode_id, body, provider):
@@ -521,6 +558,8 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None):
                                        "Configure LLM_API_KEY on the local server to enable narration suggestions.")
                     record = studio.create_narration_suggestion(episode_id, read_json(environ), provider)
                     return json_response(start_response, 201, {"suggestion": record})
+                if len(parts) == 5 and parts[3] == "scripts" and parts[4] == "fish-audio-approval" and method == "POST":
+                    return json_response(start_response, 200, studio.approve_fish_script(episode_id, read_json(environ)))
                 if len(parts) == 5 and parts[3] == "scripts" and method == "PUT":
                     return json_response(start_response, 200, studio.update_script(episode_id, parts[4], read_json(environ)))
                 if len(parts) == 4 and parts[3] == "files" and method == "GET":

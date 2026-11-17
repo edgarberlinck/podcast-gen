@@ -56,6 +56,26 @@ test("editing an existing original requires affirmative confirmation", async () 
   assert.deepEqual(JSON.parse(calls[0].options.body), { content: "New article", confirm_edit: true });
 });
 
+test("suggestion scopes and exact-script approval use separate explicit API operations", async () => {
+  const calls = [];
+  const api = createApi(async (path, options) => {
+    calls.push({ path, options });
+    return response({ suggestion: { id: "suggestion-1" } });
+  });
+  await api.requestNarrationSuggestion("episode-1", "article");
+  await api.requestNarrationSuggestion("episode-1", "paragraph", 2);
+  assert.throws(() => api.approveFishScript("episode-1", "script", false), /confirmação explícita/i);
+  await api.approveFishScript("episode-1", "saved script", true);
+  assert.deepEqual(calls.map(({ path }) => path), [
+    "/api/episodes/episode-1/narration-suggestions",
+    "/api/episodes/episode-1/narration-suggestions",
+    "/api/episodes/episode-1/scripts/fish-audio-approval",
+  ]);
+  assert.deepEqual(JSON.parse(calls[0].options.body), { scope: "article" });
+  assert.deepEqual(JSON.parse(calls[1].options.body), { scope: "paragraph", paragraph_index: 2 });
+  assert.deepEqual(JSON.parse(calls[2].options.body), { content: "saved script", confirm_approval: true });
+});
+
 test("unknown derived content kinds cannot select a route", () => {
   const api = createApi(async () => response({}));
   assert.throws(() => api.saveScript("episode-1", "original", "unsafe"), /desconhecido/i);

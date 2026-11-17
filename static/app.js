@@ -12,6 +12,8 @@
   let currentVoices = [];
   let episodeCache = [];
   let listFilters = { search: "", status: "", language: "" };
+  let scriptReview = null;
+  let interfaceLanguage = null;
 
   const h = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const langName = (code) => code === "en" ? "English" : "Português (Brasil)";
@@ -53,9 +55,27 @@
     return `<span class="status-chip ${statusClass(status)}">${h(status || "Draft")}</span>`;
   }
 
+  function setShellLanguage(language) {
+    const english = language === "en";
+    document.documentElement.lang = english ? "en" : "pt-BR";
+    const labels = english ? ["Overview", "Episodes", "Voice library"] : ["Visão geral", "Episódios", "Biblioteca de vozes"];
+    document.querySelectorAll(".primary-nav a").forEach((link, index) => {
+      link.lastChild.textContent = ` ${labels[index]}`;
+    });
+    document.querySelector(".sidebar").setAttribute("aria-label", english ? "Main navigation" : "Navegação principal");
+    document.querySelector(".brand").setAttribute("aria-label", english ? "Código & Cicatriz, overview" : "Código & Cicatriz, visão geral");
+    document.querySelector(".skip-link").textContent = english ? "Skip to content" : "Pular para o conteúdo";
+    document.querySelector(".sidebar-kicker").textContent = english ? "LOCAL STUDIO" : "ESTÚDIO LOCAL";
+    document.querySelector(".local-note strong").textContent = english ? "DATA ON THIS DEVICE" : "DADOS NO DISPOSITIVO";
+    document.querySelector(".local-note p").textContent = english ? "Your studio stays on your computer." : "Seu estúdio permanece no seu computador.";
+    document.querySelector(".sidebar-footer").textContent = english ? "v0.3 · editorial review" : "v0.3 · revisão editorial";
+  }
+
   async function loadRoute() {
     const requestId = ++pageRequest;
     currentRoute = window.location.hash || "#dashboard";
+    scriptReview = null;
+    setShellLanguage("pt");
     originalUnlocked = false;
     hideNotice();
     view.innerHTML = '<div class="loading" role="status">Carregando seu estúdio…</div>';
@@ -156,18 +176,207 @@
 
   async function renderScripts(id, requestId) {
     setNav("episodes", "Episódios / Roteiros");
-    const [episode, voicesResult] = await Promise.all([api.episode(id), api.voices()]);
+    const [episode, voicesResult, suggestionResult] = await Promise.all([
+      api.episode(id), api.voices(), api.narrationSuggestions(id),
+    ]);
     if (requestId !== pageRequest) return;
-    const selectedVoice = (voicesResult.voices || []).find((voice) => voice.id === episode.selected_voice_id);
-    const countWords = (text) => text.trim() ? text.trim().split(/\s+/).length : 0;
-    view.innerHTML = `<div class="editor-top"><div>${heading("Roteiros do episódio", `${episode.title} · ${langShort(episode.language)}`)}</div><button class="button" data-action="save-scripts">Salvar alterações</button></div>
-      <section class="panel"><div class="voice-select-row"><div class="form-field"><label for="script-voice">Voz selecionada para referência</label><select id="script-voice"><option value="">Sem voz selecionada</option>${(voicesResult.voices || []).filter((voice) => voice.language === episode.language).map((voice) => `<option value="${h(voice.id)}" ${episode.selected_voice_id === voice.id ? "selected" : ""}>${h(voice.display_name)} · ${langShort(voice.language)}</option>`).join("")}</select></div><span class="muted">${selectedVoice ? `ID local: ${h(selectedVoice.fish_audio_id)}` : "Selecione uma voz registrada, ou deixe em branco."}</span></div></section>
-      <div class="compare-label"><span>COMPARAÇÃO LADO A LADO · VERSÕES INDEPENDENTES</span><span>Os painéis editáveis são salvos em rotas separadas.</span></div>
-      <div class="content-versions"><section class="version-card original"><header class="version-header"><span class="eyebrow">01 · Fonte preservada</span><h3>Artigo original</h3></header><div class="version-body"><textarea maxlength="100000" aria-label="Artigo original para comparação" readonly>${h(episode.original_article)}</textarea></div><footer class="version-footer">Versão original · edição deliberada na tela Artigo</footer></section>
-      <section class="version-card narration"><header class="version-header"><span class="eyebrow">02 · Texto de leitura</span><h3>Roteiro de narração</h3></header><div class="version-body"><textarea id="narration-script" maxlength="100000" aria-label="Roteiro de narração editável" placeholder="Escreva manualmente a versão para narração…">${h(episode.narration_script)}</textarea></div><footer class="version-footer">Rascunho manual · ${countWords(episode.narration_script)} palavras</footer></section>
-      <section class="version-card fish"><header class="version-header"><span class="eyebrow">03 · Formatação manual</span><h3>Script Fish Audio</h3></header><div class="version-body"><textarea id="fish-script" maxlength="100000" aria-label="Script Fish Audio editável" placeholder="Escreva manualmente o script e suas etiquetas…">${h(episode.fish_audio_script)}</textarea></div><footer class="version-footer">Sintaxe não validada · somente texto salvo</footer></section></div>
-      <div class="info-strip">Este núcleo não faz sugestões por IA, não verifica etiquetas com Fish Audio e não gera áudio. O artigo, o roteiro de narração e o script Fish são armazenados separadamente.</div>
-      <div class="save-row"><a class="button secondary" href="#episode/${encodeURIComponent(episode.id)}">Voltar ao artigo</a><button class="button" data-action="save-scripts">Salvar roteiros</button><span id="scripts-save-state" class="save-state" aria-live="polite"></span></div>`;
+    const suggestions = suggestionResult.suggestions || [];
+    scriptReview = {
+      id, episode, voices: voicesResult.voices || [], suggestions,
+      originalParts: episode.original_article.split(/\r?\n[ \t]*\r?\n/),
+      selectedIndex: 0, scope: "article", selectedSuggestion: suggestions[0] || null,
+      busy: false, error: false, request: null, stage: "narration", saving: false,
+      narrationDraft: episode.narration_script, fishDraft: episode.fish_audio_script,
+      voiceId: episode.selected_voice_id || "", suggestionEdits: {},
+      language: interfaceLanguage || episode.language,
+    };
+    paintScriptReview();
+  }
+
+  // Changing stage or interface language never saves or translates editorial text.
+  function captureScriptEditors() {
+    if (!scriptReview) return;
+    const fields = { "narration-script": "narrationDraft", "fish-script": "fishDraft", "script-voice": "voiceId" };
+    Object.entries(fields).forEach(([id, key]) => {
+      const field = document.getElementById(id);
+      if (field) scriptReview[key] = field.value;
+    });
+    const suggestion = document.getElementById("suggestion-text");
+    if (suggestion && scriptReview.selectedSuggestion) scriptReview.suggestionEdits[scriptReview.selectedSuggestion.id] = suggestion.value;
+  }
+
+  function paintScriptReview(focusHeading = false) {
+    const { episode, originalParts, voices, stage, language } = scriptReview;
+    const fishStage = stage === "fish";
+    const english = language === "en";
+    setShellLanguage(language);
+    const strings = english ? {
+      crumb: "Episodes / Narration review", title: "Prepare the narration draft", safety: "Suggestions are drafts — they never change your original article.", safetyCopy: "Your source stays read-only. Review each change and save narration separately when ready.",
+      original: "Original article", narration: "Narration draft", fish: "Fish Audio script", source: "SOURCE PRESERVED · READ ONLY", select: "Select paragraph", article: "Whole article", articleDetail: "Complete source text", paragraph: "Selected paragraph", paragraphDetail: "Only selected paragraph; other draft text stays unchanged", history: "Previous suggestions", readOnly: "read-only", voiceReference: "Voice reference", noVoice: "No voice is selected. Approval does not contact Fish Audio.", versions: "Editorial versions", request: "Request suggestion", sourceEmpty: "Add text to the original article before requesting a suggestion.", scopeLabel: "Choose a suggestion scope", compare: "Compare with original", suggestion: "Suggestion · editable", use: "Use in draft", keep: "Keep current text", save: "Save changes", fishTitle: "Review and approve Fish Audio script", approve: "Approve this saved version", pending: "Awaiting your decision", approved: "This exact saved version is approved", notSaved: "Save changes before approving this version.", confirmation: "Approve this exact saved Fish Audio script? This does not generate audio or publish.", confirm: "Yes, approve this version", cancel: "Back to review", retry: "Try again", loading: "Preparing suggestion… Your saved draft and source are unchanged.", safeError: "We couldn’t create this suggestion. Your original and saved draft are unchanged. Try again or continue editing manually. Technical details are hidden.", selected: "Selected paragraph", saved: "Saved locally", noSuggestion: "Request a suggestion to compare it here. Suggestions are never applied automatically.", review: "Review meaning and factual fidelity; suggestions are not fact checks.", manual: "Manual edit", saveOk: "Current script saved locally; other versions are unchanged.", approvedToast: "This exact saved Fish Audio script was approved.",
+    } : {
+      crumb: "Episódios / Preparar narração", title: "Preparar roteiro de narração", safety: "Sugestões são rascunhos — não alteram seu artigo original.", safetyCopy: "O original fica somente para leitura. Revise cada mudança e salve o roteiro separadamente.",
+      original: "Artigo original", narration: "Roteiro de narração", fish: "Script Fish Audio", source: "FONTE PRESERVADA · SOMENTE LEITURA", select: "Selecionar parágrafo", article: "Artigo inteiro", articleDetail: "Texto-fonte completo", paragraph: "Parágrafo selecionado", paragraphDetail: "Somente o parágrafo selecionado; o restante do rascunho permanece igual", history: "Sugestões anteriores", readOnly: "somente leitura", voiceReference: "Voz selecionada para referência", noVoice: "Nenhuma voz selecionada. A aprovação não contata o Fish Audio.", versions: "Versões editoriais", request: "Gerar sugestão", sourceEmpty: "Adicione texto ao artigo original antes de pedir uma sugestão.", scopeLabel: "Como você quer preparar a sugestão?", compare: "Comparar com o original", suggestion: "Sugestão · editável", use: "Usar no rascunho", keep: "Manter texto atual", save: "Salvar alterações", fishTitle: "Revisar e aprovar script Fish Audio", approve: "Aprovar esta versão salva", pending: "Aguardando sua decisão", approved: "Esta versão salva exata está aprovada", notSaved: "Salve as alterações antes de aprovar esta versão.", confirmation: "Aprovar este script Fish Audio salvo exatamente? Isto não gera áudio nem publica.", confirm: "Sim, aprovar esta versão", cancel: "Voltar à revisão", retry: "Tentar novamente", loading: "Preparando sugestão… O rascunho salvo e o original permanecem intactos.", safeError: "Não foi possível criar esta sugestão. O artigo original e o roteiro salvo permanecem intactos. Tente novamente ou continue editando. Detalhes técnicos foram ocultados.", selected: "Parágrafo selecionado", saved: "Salvo localmente", noSuggestion: "Peça uma sugestão para compará-la aqui. Sugestões nunca são aplicadas automaticamente.", review: "Revise o sentido e a fidelidade factual; sugestões não verificam fatos.", manual: "Edição manual", saveOk: "Roteiro atual salvo localmente; as outras versões permanecem intactas.", approvedToast: "Esta versão exata do script Fish Audio foi aprovada.",
+    };
+    Object.assign(strings, english ? {
+      language: "Interface language", next: "Review Fish Audio script →", back: "← Back to narration",
+      nextCopy: "A separate version. Review and approve it yourself; no step generates audio.",
+      savedNarration: "Saved narration draft", unsaved: "Unsaved changes", preserved: "Preserved · read-only",
+      approvalSafety: "All three versions remain separate.", approvalCopy: "Approval confirms only this exact saved script. It does not generate audio, contact Fish Audio, or publish.",
+      summary: "Version summary", comparison: "Compare with source versions", savedVersion: "Saved script", empty: "No saved text yet",
+    } : {
+      language: "Idioma da interface", next: "Revisar script Fish Audio →", back: "← Voltar à narração",
+      nextCopy: "Versão separada. Você revisa e aprova; nenhuma etapa gera áudio.",
+      savedNarration: "Roteiro de narração salvo", unsaved: "Alterações não salvas", preserved: "Preservado · somente leitura",
+      approvalSafety: "As três versões continuam separadas.", approvalCopy: "A aprovação confirma apenas este script salvo exato. Não gera áudio, não contata o Fish Audio nem publica.",
+      summary: "Resumo das versões", comparison: "Compare com as versões-fonte", savedVersion: "Script salvo", empty: "Nenhum texto salvo ainda",
+    });
+    scriptReview.strings = strings;
+    setNav("episodes", strings.crumb);
+    document.getElementById("breadcrumb").textContent = `${english ? "Studio" : "Estúdio"} / ${fishStage ? strings.fishTitle : strings.crumb}`;
+    const selectedVoice = voices.find((voice) => voice.id === scriptReview.voiceId);
+    const paragraphButtons = originalParts.map((paragraph, index) => `<li><button type="button" class="source-paragraph" data-action="select-paragraph" data-index="${index}" aria-pressed="false" ${paragraph.trim() ? "" : "disabled"}><span>${h(strings.select)} ${index + 1}</span><span>${h(paragraph)}</span></button></li>`).join("");
+    view.innerHTML = `<div class="review-language"><label for="interface-language">${h(strings.language)}</label><select id="interface-language" ${scriptReview.saving ? "disabled" : ""}><option value="pt" ${english ? "" : "selected"}>PT-BR</option><option value="en" ${english ? "selected" : ""}>EN</option></select></div>
+      <div class="editor-top"><div>${heading(fishStage ? strings.fishTitle : strings.title, `${episode.title} · ${langName(episode.language)}`)}</div><div class="heading-actions"><button class="button" data-action="save-scripts" ${scriptReview.saving ? "disabled" : ""}>${h(strings.save)}</button></div></div>
+      <nav class="script-steps" aria-label="${h(strings.versions)}"><span>01 · ${h(strings.original)}</span><span ${fishStage ? "" : 'aria-current="step"'}>02 · ${h(strings.narration)}</span><span ${fishStage ? 'aria-current="step"' : ""}>03 · ${h(strings.fish)}</span></nav>
+      <section class="editorial-safety"><strong>✓ ${h(fishStage ? strings.approvalSafety : strings.safety)}</strong><p>${h(fishStage ? strings.approvalCopy : strings.safetyCopy)}</p></section>
+      ${!fishStage ? `
+      <div class="narration-layout"><section class="version-card original source-card"><header class="version-header"><span class="eyebrow">${h(strings.source)}</span><h3>${h(strings.original)}</h3></header><ol class="source-paragraphs" lang="${h(episode.language)}">${paragraphButtons || `<li>${h(strings.sourceEmpty)}</li>`}</ol></section>
+      <section class="suggestion-card"><header class="version-header"><span class="eyebrow">02 · ${h(strings.suggestion)}</span><h3>${h(strings.narration)}</h3></header>
+       <div class="suggestion-controls"><fieldset><legend>${h(strings.scopeLabel)}</legend><label class="scope-option"><input type="radio" name="suggestion-scope" value="article" checked> <span><strong>${h(strings.article)}</strong><small>${h(strings.articleDetail)}</small></span></label><label class="scope-option"><input type="radio" name="suggestion-scope" value="paragraph"> <span><strong>${h(strings.paragraph)}</strong><small>${h(strings.paragraphDetail)}</small></span></label></fieldset>
+       <button class="button primary" data-action="request-suggestion" ${episode.original_article.trim() ? "" : "disabled"}>✦ ${h(strings.request)}</button><div id="suggestion-status" aria-live="polite"></div><div id="suggestion-review"></div></div>
+      </section></div>
+      <section class="version-card narration draft-editor"><header class="version-header"><span class="eyebrow">02 · ${h(strings.manual)}</span><h3>${h(strings.narration)}</h3></header><div class="version-body"><label class="sr-only" for="narration-script">${h(strings.narration)} · ${h(strings.manual)}</label><textarea lang="${h(episode.language)}" id="narration-script" maxlength="100000" aria-label="${english ? "Editable narration draft" : "Roteiro de narração editável"}" placeholder="${h(strings.manual)}…">${h(scriptReview.narrationDraft)}</textarea></div><footer class="version-footer">${h(strings.safetyCopy)}</footer></section>
+      <section class="fish-next-step"><span class="eyebrow">03 · ${h(strings.fish)}</span><h2>${h(strings.fishTitle)}</h2><p>${h(strings.nextCopy)}</p><button class="button" data-action="review-stage" data-stage="fish" ${scriptReview.saving ? "disabled" : ""}>${h(strings.next)}</button></section>
+      ` : `
+      <section class="version-summary" aria-label="${h(strings.summary)}"><div><strong>01 · ${h(strings.original)}</strong><p>${h(strings.preserved)}</p></div><div><strong>02 · ${h(strings.narration)}</strong><p>${h(scriptReview.narrationDraft !== episode.narration_script ? strings.unsaved : episode.narration_script ? strings.saved : strings.empty)}</p></div><div><strong>03 · ${h(strings.fish)}</strong><p>${h(scriptReview.fishDraft !== episode.fish_audio_script ? strings.unsaved : episode.fish_audio_script ? strings.savedVersion : strings.empty)}</p></div></section>
+      <div class="fish-review-layout"><section class="fish-review"><header><span class="eyebrow">03 · ${h(strings.manual)}</span><h2>${h(strings.fish)}</h2></header><label for="script-voice">${h(strings.voiceReference)}</label><select id="script-voice"><option value="">${english ? "No voice selected" : "Sem voz selecionada"}</option>${voices.filter((voice) => voice.language === episode.language).map((voice) => `<option value="${h(voice.id)}" ${scriptReview.voiceId === voice.id ? "selected" : ""}>${h(voice.display_name)} · ${langShort(voice.language)}</option>`).join("")}</select><label for="fish-script">${h(strings.fish)}</label><textarea lang="${h(episode.language)}" id="fish-script" maxlength="100000" aria-label="${english ? "Editable Fish Audio script" : "Script Fish Audio editável"}" placeholder="${h(strings.fish)}…">${h(scriptReview.fishDraft)}</textarea><div class="fish-approval-state" id="fish-approval-state" aria-live="polite"></div><p class="muted">${selectedVoice ? `${h(strings.voiceReference)} · ${h(selectedVoice.display_name)} · ${h(selectedVoice.fish_audio_id)}` : h(strings.noVoice)}</p><p class="muted">${h(strings.approvalCopy)}</p><button class="button primary" data-action="open-approval">${h(strings.approve)}</button></section>
+      <aside class="approval-comparison"><h2>${h(strings.comparison)}</h2><section class="version-card original"><header class="version-header"><h3>${h(strings.original)} · ${h(strings.readOnly)}</h3></header><div class="version-body"><textarea aria-label="${english ? "Original article for comparison" : "Artigo original para comparação"}" readonly>${h(episode.original_article)}</textarea></div></section><section class="version-card narration"><header class="version-header"><h3>${h(strings.savedNarration)} · ${h(strings.readOnly)}</h3></header><div class="version-body"><textarea aria-label="${h(strings.savedNarration)}" readonly>${h(episode.narration_script)}</textarea></div></section></aside></div>
+      <dialog id="approval-dialog" class="approval-dialog" aria-labelledby="approval-title"><form method="dialog"><p class="eyebrow">${english ? "EXPLICIT APPROVAL · NO AUTOMATION" : "APROVAÇÃO EXPLÍCITA · SEM AUTOMAÇÃO"}</p><h2 id="approval-title">${h(strings.approve)}?</h2><p>${h(episode.title)}</p><p>${h(strings.confirmation)}</p><p>${h(strings.savedVersion)} · ${h(strings.saved)}</p><div class="dialog-actions"><button class="button secondary" value="cancel">${h(strings.cancel)}</button><button class="button primary" value="confirm" data-action="confirm-approval">${h(strings.confirm)}</button></div></form></dialog>
+      <button class="button secondary" data-action="review-stage" data-stage="narration" ${scriptReview.saving ? "disabled" : ""}>${h(strings.back)}</button>
+      `}
+      <div class="save-row"><a class="button secondary" href="#episode/${encodeURIComponent(episode.id)}">← ${h(english ? "Back to article" : "Voltar ao artigo")}</a><button class="button" data-action="save-scripts" ${scriptReview.saving ? "disabled" : ""}>${h(english ? "Save scripts" : "Salvar roteiros")}</button><span id="scripts-save-state" class="save-state" aria-live="polite"></span></div>`;
+    renderSuggestionReview();
+    renderFishApprovalState();
+    renderSuggestionStatus();
+    if (focusHeading) {
+      const title = view.querySelector("h1");
+      title.tabIndex = -1;
+      title.focus();
+    }
+  }
+
+  function renderSuggestionReview() {
+    const panel = document.getElementById("suggestion-review");
+    if (!panel || !scriptReview) return;
+    const { strings, selectedSuggestion, suggestions } = scriptReview;
+    if (!selectedSuggestion) {
+      panel.innerHTML = `<p class="suggestion-empty">${h(strings.noSuggestion)}</p>`;
+      return;
+    }
+    const history = suggestions.length > 1 ? `<label class="sr-only" for="suggestion-history">${h(strings.history)}</label><select id="suggestion-history">${suggestions.map((item, index) => `<option value="${h(item.id)}" ${item.id === selectedSuggestion.id ? "selected" : ""}>${h(item.scope === "article" ? strings.article : `${strings.paragraph} ${(item.paragraph_index || 0) + 1}`)} · ${h(item.created_at)}</option>`).join("")}</select>` : "";
+    panel.innerHTML = `${history}<div class="suggestion-compare"><article><span>${h(strings.original)} · ${h(strings.readOnly)}</span><p>${h(selectedSuggestion.source_text)}</p></article><div><label for="suggestion-text">${h(strings.suggestion)}</label><textarea id="suggestion-text" maxlength="100000">${h(scriptReview.suggestionEdits[selectedSuggestion.id] ?? selectedSuggestion.suggested_text)}</textarea></div></div><p class="muted">${h(strings.review)} · ${h(strings.pending)}</p><div class="suggestion-actions"><button class="button secondary" data-action="keep-suggestion">${h(strings.keep)}</button><button class="button" data-action="use-suggestion">${h(strings.use)}</button></div>`;
+  }
+
+  function renderFishApprovalState() {
+    const box = document.getElementById("fish-approval-state");
+    if (!box || !scriptReview) return;
+    const field = document.getElementById("fish-script");
+    const saved = scriptReview.episode.fish_audio_script;
+    const changed = field.value !== saved;
+    const approved = !changed && !!scriptReview.episode.fish_audio_approved_sha256;
+    box.className = `fish-approval-state ${approved ? "approved" : "pending"}`;
+    box.textContent = approved ? scriptReview.strings.approved : changed ? scriptReview.strings.notSaved : scriptReview.strings.pending;
+    const button = document.querySelector('[data-action="open-approval"]');
+    if (button) button.disabled = changed || !field.value.trim();
+  }
+
+  function renderSuggestionStatus() {
+    const status = document.getElementById("suggestion-status");
+    if (!status || !scriptReview) return;
+    const { strings, busy, error, episode } = scriptReview;
+    const button = document.querySelector('[data-action="request-suggestion"]');
+    button.disabled = busy || !episode.original_article.trim();
+    button.setAttribute("aria-busy", String(busy));
+    button.textContent = busy ? strings.loading : `✦ ${strings.request}`;
+    if (error) {
+      status.setAttribute("role", "alert");
+      status.innerHTML = `${h(strings.safeError)} <button type="button" class="button secondary small" data-action="retry-suggestion">${h(strings.retry)}</button>`;
+    } else {
+      status.removeAttribute("role");
+      status.textContent = busy ? strings.loading : scriptReview.selectedSuggestion ? strings.suggestion : "";
+    }
+    view.querySelectorAll('input[name="suggestion-scope"]').forEach((input) => { input.checked = input.value === scriptReview.scope; });
+    view.querySelectorAll(".source-paragraph").forEach((button) => {
+      button.setAttribute("aria-pressed", String(scriptReview.scope === "paragraph" && Number(button.dataset.index) === scriptReview.selectedIndex));
+    });
+  }
+
+  async function requestSuggestion(scope = scriptReview && scriptReview.scope, paragraphIndex = scriptReview && scriptReview.selectedIndex) {
+    if (!scriptReview || scriptReview.busy) return;
+    const review = scriptReview;
+    captureScriptEditors();
+    review.scope = scope;
+    review.request = { scope, paragraphIndex };
+    review.busy = true;
+    review.error = false;
+    renderSuggestionStatus();
+    try {
+      const result = await api.requestNarrationSuggestion(review.id, scope, paragraphIndex);
+      if (scriptReview !== review) return;
+      review.suggestions = [result.suggestion, ...review.suggestions.filter((item) => item.id !== result.suggestion.id)];
+      review.selectedSuggestion = result.suggestion;
+      renderSuggestionReview();
+    } catch (_error) {
+      if (scriptReview !== review) return;
+      review.error = true;
+    } finally {
+      if (scriptReview === review) {
+        review.busy = false;
+        renderSuggestionStatus();
+      }
+    }
+  }
+
+  function applySuggestion() {
+    if (!scriptReview || !scriptReview.selectedSuggestion) return;
+    const suggestion = document.getElementById("suggestion-text").value;
+    const narrationField = document.getElementById("narration-script");
+    if (scriptReview.selectedSuggestion.scope === "article") {
+      narrationField.value = suggestion;
+    } else {
+      const index = scriptReview.selectedSuggestion.paragraph_index;
+      const originalParts = scriptReview.originalParts;
+      const parts = narrationField.value ? narrationField.value.split(/\r?\n[ \t]*\r?\n/) : originalParts.slice();
+      while (parts.length <= index) parts.push(originalParts[parts.length] || "");
+      parts[index] = suggestion;
+      narrationField.value = parts.join("\n\n");
+    }
+    narrationField.dispatchEvent(new Event("input", { bubbles: true }));
+    showNotice(scriptReview.language === "en" ? "Suggestion copied into the separate narration draft. Save when ready." : "Sugestão copiada para o rascunho de narração separado. Salve quando estiver pronto.");
+  }
+
+  async function approveFishScript() {
+    if (!scriptReview) return;
+    const review = scriptReview;
+    const field = document.getElementById("fish-script");
+    if (field.value !== review.episode.fish_audio_script || !field.value.trim()) {
+      renderFishApprovalState();
+      return;
+    }
+    const dialog = document.getElementById("approval-dialog");
+    const confirmButton = dialog.querySelector('[data-action="confirm-approval"]');
+    confirmButton.disabled = true;
+    try {
+      const updated = await api.approveFishScript(review.id, field.value, true);
+      if (scriptReview !== review) return;
+      review.episode = updated;
+      dialog.close();
+      renderFishApprovalState();
+      showNotice(review.strings.approvedToast);
+    } catch (_error) {
+      dialog.close();
+      showNotice(review.language === "en" ? "Could not approve this script. Reload and verify the saved version." : "Não foi possível aprovar este script. Recarregue e confira a versão salva.", "error");
+    } finally { confirmButton.disabled = false; }
   }
 
   async function renderVoices(requestId) {
@@ -232,26 +441,36 @@
   }
 
   async function saveScripts() {
-    const route = currentRoute.slice(1).split("/");
-    const id = route[1];
+    if (!scriptReview) return;
+    const review = scriptReview;
+    if (review.saving) return;
+    captureScriptEditors();
+    review.saving = true;
+    const { id, strings } = review;
     const state = document.getElementById("scripts-save-state");
-    const button = document.querySelector('[data-action="save-scripts"]');
-    button.disabled = true;
-    if (state) state.textContent = "Salvando localmente…";
+    const buttons = document.querySelectorAll('[data-action="save-scripts"], [data-action="review-stage"], #interface-language');
+    buttons.forEach((button) => { button.disabled = true; });
+    if (state) state.textContent = review.language === "en" ? "Saving locally…" : "Salvando localmente…";
     try {
-      const tasks = [api.updateEpisode(id, { selected_voice_id: document.getElementById("script-voice").value || null })];
-      const narration = document.getElementById("narration-script").value;
-      const fish = document.getElementById("fish-script").value;
-      const episode = await api.episode(id);
-      if (narration !== episode.narration_script) tasks.push(api.saveScript(id, "narration", narration));
-      if (fish !== episode.fish_audio_script) tasks.push(api.saveScript(id, "fishAudio", fish));
-      await Promise.all(tasks);
-      showNotice("Roteiros salvos em versões independentes.");
-      if (state) state.textContent = "● Salvo localmente";
-    } catch (error) {
-      showNotice(error.message, "error");
-      if (state) state.textContent = "Não foi possível salvar.";
-    } finally { button.disabled = false; }
+      let episode = await api.episode(id);
+      const narration = review.narrationDraft;
+      const fish = review.fishDraft;
+      if (review.stage === "narration" && narration !== episode.narration_script) episode = await api.saveScript(id, "narration", narration);
+      if (review.stage === "fish" && fish !== episode.fish_audio_script) episode = await api.saveScript(id, "fishAudio", fish);
+      const voice = document.getElementById("script-voice");
+      if (voice && voice.value !== (episode.selected_voice_id || "")) episode = await api.updateEpisode(id, { selected_voice_id: voice.value || null });
+      if (scriptReview !== review) return;
+      captureScriptEditors();
+      review.episode = episode;
+      review.saving = false;
+      paintScriptReview();
+      showNotice(strings.saveOk);
+      document.getElementById("scripts-save-state").textContent = `● ${strings.saved}`;
+    } catch (_error) {
+      if (scriptReview !== review) return;
+      showNotice(review.language === "en" ? "Could not save your scripts. Your original article is unchanged." : "Não foi possível salvar os roteiros. O artigo original permanece inalterado.", "error");
+      if (state) state.textContent = review.language === "en" ? "Save failed." : "Não foi possível salvar.";
+    } finally { review.saving = false; buttons.forEach((button) => { button.disabled = false; }); }
   }
 
   async function registerVoice(event) {
@@ -279,8 +498,31 @@
       listFilters.search = event.target.value;
       renderEpisodeList(true);
     }
+    if (event.target.id === "fish-script" && scriptReview) renderFishApprovalState();
+    if (event.target.id === "narration-script") {
+      const comparison = view.querySelectorAll(".content-versions textarea")[1];
+      if (comparison) comparison.value = event.target.value;
+    }
+    if (event.target.id === "fish-script") {
+      const comparison = view.querySelectorAll(".content-versions textarea")[2];
+      if (comparison) comparison.value = event.target.value;
+    }
   });
   view.addEventListener("change", (event) => {
+    if (event.target.id === "interface-language" && scriptReview) {
+      captureScriptEditors();
+      interfaceLanguage = event.target.value;
+      scriptReview.language = interfaceLanguage;
+      hideNotice();
+      paintScriptReview();
+      document.getElementById("interface-language").focus();
+    }
+    if (event.target.name === "suggestion-scope" && scriptReview) scriptReview.scope = event.target.value;
+    if (event.target.id === "suggestion-history" && scriptReview) {
+      captureScriptEditors();
+      scriptReview.selectedSuggestion = scriptReview.suggestions.find((item) => item.id === event.target.value) || null;
+      renderSuggestionReview();
+    }
     if (event.target.id === "status-filter") listFilters.status = event.target.value;
     if (event.target.id === "language-filter") listFilters.language = event.target.value;
     if (["status-filter", "language-filter"].includes(event.target.id)) renderEpisodeList(true);
@@ -301,8 +543,37 @@
     const button = event.target.closest("[data-action]");
     if (!button) return;
     const action = button.dataset.action;
+    if (action === "review-stage" && scriptReview && !scriptReview.saving) {
+      captureScriptEditors();
+      scriptReview.stage = button.dataset.stage;
+      hideNotice();
+      paintScriptReview(true);
+    }
     if (action === "save-episode") await saveEpisode();
     if (action === "save-scripts") await saveScripts();
+    if (action === "request-suggestion") await requestSuggestion();
+    if (action === "retry-suggestion") await requestSuggestion(scriptReview.request.scope, scriptReview.request.paragraphIndex);
+    if (action === "select-paragraph") {
+      scriptReview.selectedIndex = Number(button.dataset.index);
+      scriptReview.scope = "paragraph";
+      const radio = view.querySelector('input[name="suggestion-scope"][value="paragraph"]');
+      if (radio) radio.checked = true;
+      view.querySelectorAll(".source-paragraph").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+    }
+    if (action === "use-suggestion") applySuggestion();
+    if (action === "keep-suggestion") {
+      scriptReview.selectedSuggestion = null;
+      renderSuggestionReview();
+    }
+    if (action === "open-approval") {
+      renderFishApprovalState();
+      const dialog = document.getElementById("approval-dialog");
+      if (dialog && !button.disabled) dialog.showModal();
+    }
+    if (action === "confirm-approval") {
+      event.preventDefault();
+      await approveFishScript();
+    }
     if (action === "import-article") importInput.click();
     if (action === "unlock-original") {
       if (window.confirm("Você deseja editar o artigo ORIGINAL? Esta ação é separada das versões de roteiro.")) {
