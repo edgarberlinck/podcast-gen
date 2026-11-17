@@ -22,16 +22,23 @@ test("metadata and content use their dedicated local API routes", async () => {
   await api.updateEpisode("episode-1", { title: "Edited" });
   await api.saveScript("episode-1", "narration", "Narration text");
   await api.saveScript("episode-1", "fishAudio", "[pause]Fish text");
+  await api.episode("episode-1");
+  await api.voices();
+  await api.registerVoice({ display_name: "Voice", fish_audio_id: "fish-id", language: "en" });
 
   assert.deepEqual(calls.map(({ path }) => path), [
     "/api/episodes",
     "/api/episodes/episode-1",
     "/api/episodes/episode-1/scripts/narration",
     "/api/episodes/episode-1/scripts/fish-audio",
+    "/api/episodes/episode-1",
+    "/api/voices",
+    "/api/voices",
   ]);
   assert.equal(calls[0].options.method, "POST");
   assert.deepEqual(JSON.parse(calls[2].options.body), { content: "Narration text" });
   assert.deepEqual(JSON.parse(calls[3].options.body), { content: "[pause]Fish text" });
+  assert.equal(calls[6].options.method, "POST");
   assert.ok(calls.slice(1).every(({ path }) => !path.endsWith("/original")));
 });
 

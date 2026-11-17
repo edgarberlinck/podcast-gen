@@ -1,6 +1,6 @@
 # Código & Cicatriz — Local Studio Core
 
-A local-first persistence and JSON API for the podcast production studio. This Phase 2 backend stores episode metadata, three independent editorial texts, externally registered voice metadata, and versioned audio files on the local machine. It uses only Python's standard library and SQLite; it makes no network/vendor calls.
+A local-first podcast studio interface and persistence API. This Phase 2 application stores episode metadata, three independent editorial texts, externally registered voice metadata, and versioned audio files on the local machine. It uses Python's standard library and SQLite; it makes no network/vendor calls.
 
 ## Requirements and setup
 

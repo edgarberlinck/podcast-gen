@@ -98,7 +98,7 @@
 
   function renderEpisodeRow(episode) {
     const contentSummary = episode.original_article ? (episode.narration_script || episode.fish_audio_script ? "Artigo e versões de roteiro salvos" : "Artigo original salvo · roteiro ainda não criado") : "Artigo original ainda não preenchido";
-    return `<article class="episode-row"><div><span class="row-title">${h(episode.title)}</span><span class="row-subtitle">${h(contentSummary)}</span></div><div>${statusChip(episode.status)}</div><span class="lang">${langShort(episode.language)}</span><span class="updated">${h(dateLabel(episode.updated_at))}</span><a class="row-open" href="#episode/${encodeURIComponent(episode.id)}" aria-label="Abrir episódio ${h(episode.title)}">Abrir →</a></article>`;
+    return `<article class="episode-row"><div><a class="row-title" href="#episode/${encodeURIComponent(episode.id)}">${h(episode.title)}</a><span class="row-subtitle">${h(contentSummary)}</span></div><div>${statusChip(episode.status)}</div><span class="lang">${langShort(episode.language)}</span><span class="updated">${h(dateLabel(episode.updated_at))}</span><a class="row-open" href="#episode/${encodeURIComponent(episode.id)}" aria-label="Abrir episódio ${h(episode.title)}">Abrir →</a></article>`;
   }
   async function renderEpisodes(requestId) {
     setNav("episodes", "Episódios");
