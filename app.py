@@ -286,7 +286,7 @@ class Studio:
         if scope == "article":
             source = original
         else:
-            paragraphs = re.split(r"\n[ \t]*\n", original)
+            paragraphs = re.split(r"\r?\n[ \t]*\r?\n", original)
             if index >= len(paragraphs) or not paragraphs[index].strip():
                 raise ApiError(400, "invalid_field", "paragraph_index does not identify a non-empty paragraph.")
             source = paragraphs[index]
@@ -305,7 +305,9 @@ class Studio:
         except ApiError:
             raise
         except Exception:
-            LOG.exception("Narration suggestion provider failed")
+            # Provider exceptions may contain credentials or source text. Keep
+            # the local log and public response free of exception details.
+            LOG.error("Narration suggestion provider failed for episode %s", episode["id"])
             raise ApiError(502, "suggestion_provider_error", "Narration suggestion provider failed.") from None
 
         suggestion_id, stamp = str(uuid.uuid4()), now()

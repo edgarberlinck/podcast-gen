@@ -1,6 +1,6 @@
 # Código & Cicatriz — Local Studio Core
 
-A local-first podcast studio interface and persistence API. This Phase 2 application stores episode metadata, three independent editorial texts, externally registered voice metadata, and versioned audio files on the local machine. It uses Python's standard library and SQLite; it makes no network/vendor calls.
+A local-first podcast studio interface and persistence API. This application stores episode metadata, three independent editorial texts, narration suggestions, externally registered voice metadata, and versioned audio files on the local machine. It uses Python's standard library and SQLite. By default it makes no network/vendor calls; when an LLM provider is configured, Phase 3 narration suggestions send the selected source text to that provider from the local server.
 
 ## Requirements and setup
 
@@ -17,8 +17,11 @@ The API listens on `http://127.0.0.1:8000` by default. Keep it bound to loopback
 
 ```sh
 python -m pip install pytest pytest-cov ruff
-python -m pytest --cov=app --cov-report=term-missing
+python -m pytest --cov=app --cov=narration --cov-report=term-missing
 python -m ruff check .
+node --test tests/frontend_api.test.js
+node --check static/api.js
+node --check static/app.js
 ```
 
 The test suite uses temporary directories and does not change the default local database.
@@ -106,7 +109,7 @@ Run these exact commands from the repository root:
 
 ```sh
 python -m pip install pytest pytest-cov ruff
-python -m pytest --cov=app --cov-report=term-missing
+python -m pytest --cov=app --cov=narration --cov-report=term-missing
 python -m ruff check .
 node --test tests/frontend_api.test.js
 node --check static/api.js
@@ -129,7 +132,7 @@ npm run test:e2e
 
 The suite covers dashboard loading/empty/error-and-retry states, keyboard-oriented semantic landmarks/labels, a 375px mobile viewport, Portuguese and English episode create/list/filter/reopen flows, required-title validation, local voice registration/selection, separate manual narration/Fish scripts, deliberately confirmed and declined original edits, revision preservation, and persistence across a server restart. Error-state testing aborts a local dashboard request deliberately. The responsive assertion checks horizontal overflow at one narrow viewport; this is not a full WCAG audit or a cross-browser matrix. Browser-native and backend validation not represented in these tests remains outside the reported evidence.
 
-QA run in this workspace: `npm run test:e2e` — 2 Playwright tests passed in Chromium, including a real temporary-server restart. `python -m pytest --cov=app --cov-report=term-missing` — 100 passed, 89% app.py line coverage. `python -m ruff check .`, `node --test tests/frontend_api.test.js`, and both JavaScript `node --check` commands passed. These are local test results, not CI or deployment evidence. The test target was the application and API running locally; no remote QA deployment, non-Chromium browser, full WCAG audit, live provider, audio generation, or publishing integration was exercised.
+Local verification for the Phase 3 service: `python -m pytest --cov=app --cov=narration --cov-report=term-missing` — 118 passed; measured line coverage is 89% combined (89% `app.py`, 92% `narration.py`). `python -m ruff check .`, `node --test tests/frontend_api.test.js` (4 passed), and both JavaScript `node --check` commands passed. `npm ci` and `npm run test:e2e` also passed (2 Chromium tests). No live LLM provider was called; provider behavior was verified with deterministic fakes. These are local results, not CI or deployment evidence. No remote QA deployment, non-Chromium browser, full WCAG audit, Fish Audio generation, or publishing integration was exercised.
 
 ### UI integration assumptions and boundaries
 
@@ -142,4 +145,4 @@ QA run in this workspace: `npm run test:e2e` — 2 Playwright tests passed in Ch
 
 ## Out of scope
 
-There is no AI narration, Fish Audio integration, Transistor integration, cloud storage, or automatic publishing. The Fish Audio model and tag vocabulary are not validated here. Audio generation, approval, and publication require later implementation and explicit user workflows.
+This Phase 3 delivery adds only server-side LLM narration suggestions and separate pending-suggestion persistence. It does not add a browser UI for requesting or reviewing suggestions, an approval/apply workflow, Fish Audio generation, Transistor integration, cloud storage, or automatic publishing. Fish Audio model-specific tag compatibility is not validated by this service. Audio generation, approval, and publication require later implementation and explicit user workflows.
