@@ -21,7 +21,7 @@ async function freePort() {
 function startServer() {
   server = spawn("python", ["app.py"], {
     cwd: path.resolve(__dirname, "../.."),
-    env: { ...process.env, STUDIO_HOST: "127.0.0.1", STUDIO_PORT: String(port), STUDIO_DATA_DIR: dataDir },
+    env: { ...process.env, LLM_API_KEY: "", STUDIO_HOST: "127.0.0.1", STUDIO_PORT: String(port), STUDIO_DATA_DIR: dataDir },
     stdio: "ignore",
   });
   return new Promise((resolve, reject) => {
@@ -287,6 +287,26 @@ test("Portuguese paragraph suggestions stay separate; saved Fish script approval
   await expect(page.getByText("Aguardando sua decisão")).toBeVisible();
   saved = await (await page.request.get(`${baseURL}/api/episodes/${episode.id}`)).json();
   expect(saved.fish_audio_approved_sha256).toBeNull();
+});
+
+test("unconfigured provider is rejected by the real API and UI without a live call", async ({ page }) => {
+  const created = await page.request.post(`${baseURL}/api/episodes`, {
+    data: { title: "Provider not configured", language: "en", original_article: "A source paragraph for a safe unavailable response." },
+  });
+  const episode = await created.json();
+  const response = await page.request.post(`${baseURL}/api/episodes/${episode.id}/narration-suggestions`, { data: { scope: "article" } });
+  expect(response.status()).toBe(503);
+  const body = await response.json();
+  expect(body.error.code).toBe("suggestion_provider_unavailable");
+  expect(body.error.message).toContain("LLM_API_KEY");
+  expect(JSON.stringify(body)).not.toContain("secret-token");
+  await page.goto(`${baseURL}/#scripts/${episode.id}`);
+  await page.getByRole("button", { name: "✦ Request suggestion" }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("We couldn’t create this suggestion");
+  await expect(alert).not.toContainText("LLM_API_KEY");
+  await expect(alert).not.toContainText("secret-token");
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
 });
 
 test("English narration UI exposes safe provider errors without showing technical details", async ({ page }) => {
