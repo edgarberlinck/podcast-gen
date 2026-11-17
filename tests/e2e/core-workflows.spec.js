@@ -132,10 +132,12 @@ test("Portuguese and English drafts, voices and three text versions persist inde
   const narration = "Texto de narração independente.";
   const fishScript = "[pause] Script Fish Audio manual.";
   await page.getByLabel("Roteiro de narração editável").fill(narration);
+  await page.getByRole("button", { name: "Salvar roteiros" }).click();
+  await page.getByRole("button", { name: "Revisar script Fish Audio →", exact: true }).click();
   await page.getByLabel("Script Fish Audio editável").fill(fishScript);
   await page.getByLabel("Voz selecionada para referência").selectOption({ label: "Lia editorial · PT-BR" });
   await page.getByRole("button", { name: "Salvar roteiros" }).click();
-  await expect(page.getByRole("status")).toContainText("Roteiros salvos em versões independentes");
+  await expect(page.getByRole("status")).toContainText("Roteiro atual salvo localmente");
   await page.getByRole("link", { name: "Voltar ao artigo" }).click();
   await expect(page.getByLabel("Artigo original — versão atual")).toHaveValue(portugueseOriginal);
 
@@ -173,8 +175,9 @@ test("Portuguese and English drafts, voices and three text versions persist inde
   await page.getByRole("link", { name: "Rascunho em português", exact: true }).click();
   await expect(page.getByLabel("Artigo original — versão atual")).toHaveValue(portugueseOriginal);
   await page.getByRole("link", { name: "Abrir e comparar roteiros" }).click();
-  await expect(page.getByLabel("Artigo original para comparação")).toHaveValue(portugueseOriginal);
+  await expect(page.locator(".source-paragraphs")).toContainText(portugueseOriginal);
   await expect(page.getByLabel("Roteiro de narração editável")).toHaveValue(narration);
+  await page.getByRole("button", { name: "Revisar script Fish Audio →", exact: true }).click();
   await expect(page.getByLabel("Script Fish Audio editável")).toHaveValue(fishScript);
   await expect(page.getByLabel("Voz selecionada para referência")).toHaveValue(/.+/);
   const selectedVoiceId = await page.getByLabel("Voz selecionada para referência").inputValue();
@@ -183,8 +186,9 @@ test("Portuguese and English drafts, voices and three text versions persist inde
   await stopServer();
   await startServer();
   await page.reload();
-  await expect(page.getByLabel("Artigo original para comparação")).toHaveValue(portugueseOriginal);
+  await expect(page.locator(".source-paragraphs")).toContainText(portugueseOriginal);
   await expect(page.getByLabel("Roteiro de narração editável")).toHaveValue(narration);
+  await page.getByRole("button", { name: "Revisar script Fish Audio →", exact: true }).click();
   await expect(page.getByLabel("Script Fish Audio editável")).toHaveValue(fishScript);
   await expect(page.getByLabel("Voz selecionada para referência")).toHaveValue(selectedVoiceId);
   await page.goto(`${baseURL}/#episode/${englishId}`);
@@ -238,7 +242,7 @@ test("Portuguese paragraph suggestions stay separate; saved Fish script approval
   await page.setViewportSize({ width: 390, height: 844 });
   const mobile = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
   expect(mobile.content).toBeLessThanOrEqual(mobile.viewport);
-  await expect(page.getByLabel("Artigo original para comparação")).toHaveValue(original);
+  await expect(page.locator(".source-paragraphs")).toContainText("Source paragraph one.");
   await page.getByRole("button", { name: "✦ Gerar sugestão" }).click();
   await expect(page.getByRole("button", { name: "Preparando sugestão… O rascunho salvo e o original permanecem intactos." })).toBeDisabled();
   await expect.poll(() => requested).toEqual({ scope: "article" });
@@ -255,16 +259,18 @@ test("Portuguese paragraph suggestions stay separate; saved Fish script approval
   await page.getByRole("button", { name: "✦ Gerar sugestão" }).click();
   await expect.poll(() => requested).toEqual({ scope: "paragraph", paragraph_index: 1 });
   await expect(page.getByLabel("Sugestão · editável")).toHaveValue("Reviewed second paragraph.");
-  await expect(page.getByLabel("Artigo original para comparação")).toHaveValue(original);
+  await expect(page.locator(".source-paragraphs")).toContainText("Source paragraph one.");
   await page.getByLabel("Sugestão · editável").fill("Reviewed paragraph with editorial edit.");
   await page.getByRole("button", { name: "Usar no rascunho" }).click();
   await expect(page.getByLabel("Roteiro de narração editável")).toHaveValue(
     "Draft paragraph one.\n\nReviewed paragraph with editorial edit.\n\nDraft paragraph three.",
   );
   await page.getByRole("button", { name: "Salvar roteiros" }).click();
-  await expect(page.getByRole("status")).toContainText("Roteiros salvos em versões independentes");
+  await expect(page.getByRole("status")).toContainText("Roteiro atual salvo localmente");
 
   const fishScript = "[measured]Approved text, version one.";
+  await page.getByRole("button", { name: "Salvar roteiros" }).click();
+  await page.getByRole("button", { name: "Revisar script Fish Audio →", exact: true }).click();
   await page.getByLabel("Script Fish Audio editável").fill(fishScript);
   await page.getByRole("button", { name: "Salvar roteiros" }).click();
   await page.getByRole("button", { name: "Aprovar esta versão salva" }).click();
@@ -299,5 +305,49 @@ test("English narration UI exposes safe provider errors without showing technica
   await expect(page.getByRole("alert")).toContainText("We couldn’t create this suggestion");
   await expect(page.getByRole("alert")).not.toContainText("secret token");
   await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
-  await expect(page.getByLabel("Original article for comparison")).toHaveValue("An English source paragraph.");
+  await expect(page.locator(".source-paragraphs")).toContainText("An English source paragraph.");
 });
+
+for (const language of ["pt", "en"]) {
+  test(`${language} episode supports independent interface language and focused stages on mobile`, async ({ page }) => {
+    const original = "Source text stays unchanged.";
+    const response = await page.request.post(`${baseURL}/api/episodes`, {
+      data: { title: `Language switch ${language}`, language, original_article: original },
+    });
+    const episode = await response.json();
+    const mutations = [];
+    page.on("request", (request) => {
+      if (!["GET", "HEAD"].includes(request.method())) mutations.push(request.url());
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${baseURL}/#scripts/${episode.id}`);
+    await expect(page.locator("#interface-language")).toHaveValue(language);
+    await page.locator("#narration-script").fill("Unsaved narration.");
+    await expect(page.locator("#fish-script")).toHaveCount(0);
+    await page.locator("#interface-language").selectOption(language === "pt" ? "en" : "pt");
+    await expect(page.locator("html")).toHaveAttribute("lang", language === "pt" ? "en" : "pt-BR");
+    await expect(page.locator("#narration-script")).toHaveValue("Unsaved narration.");
+    await page.locator('[data-stage="fish"]').click();
+    await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
+    await expect(page.locator('[aria-current="step"]')).toContainText("03");
+    await expect(page.locator("#narration-script")).toHaveCount(0);
+    await expect(page.locator(".approval-comparison textarea").first()).toHaveValue(original);
+    await page.locator("#fish-script").fill("Unsaved Fish.");
+    await expect(page.locator('[data-action="open-approval"]')).toBeDisabled();
+    await page.locator("#interface-language").selectOption(language);
+    await expect(page.locator("#fish-script")).toHaveValue("Unsaved Fish.");
+    const dimensions = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+    expect(dimensions[0]).toBeLessThanOrEqual(dimensions[1]);
+    await page.locator('[data-stage="narration"]').click();
+    await expect(page.locator("#narration-script")).toHaveValue("Unsaved narration.");
+    await page.locator('[data-stage="fish"]').click();
+    await expect(page.locator("#fish-script")).toHaveValue("Unsaved Fish.");
+    expect(mutations).toEqual([]);
+    const saved = await (await page.request.get(`${baseURL}/api/episodes/${episode.id}`)).json();
+    expect(saved.language).toBe(language);
+    expect(saved.original_article).toBe(original);
+    expect(saved.narration_script).toBe("");
+    expect(saved.fish_audio_script).toBe("");
+    expect(saved.fish_audio_approved_sha256).toBeNull();
+  });
+}

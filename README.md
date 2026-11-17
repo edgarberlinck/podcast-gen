@@ -19,7 +19,8 @@ The API listens on `http://127.0.0.1:8000` by default. Keep it bound to loopback
 python -m pip install pytest pytest-cov ruff
 python -m pytest --cov=app --cov=narration --cov-report=term-missing
 python -m ruff check .
-node --test tests/frontend_api.test.js
+npm ci
+npm test
 node --check static/api.js
 node --check static/app.js
 ```
@@ -113,12 +114,13 @@ Run these exact commands from the repository root:
 python -m pip install pytest pytest-cov ruff
 python -m pytest --cov=app --cov=narration --cov-report=term-missing
 python -m ruff check .
-node --test tests/frontend_api.test.js
+npm ci
+npm test
 node --check static/api.js
 node --check static/app.js
 ```
 
-Python uses the standard library at runtime. Node.js is needed only for the dependency-free JavaScript API client tests and syntax checks. The browser UI is served directly from the Python app; no npm install/build is required.
+Python uses the standard library at runtime. Node.js is used for API client tests, jsdom UI unit tests and Playwright E2E checks. The browser UI is served directly from Python; npm dependencies are development-only. There is no build or JavaScript lint script; JavaScript syntax is checked with `node --check`, and Python lint uses Ruff.
 
 ### Browser E2E checks
 
@@ -134,7 +136,16 @@ npm run test:e2e
 
 The suite covers dashboard loading/empty/error-and-retry states, semantic landmarks/labels, 375px responsive layout, Portuguese and English episode workflows, voice metadata, separate scripts, deliberate original edits, revision persistence/restart, deterministic whole-article and selected-paragraph suggestion review, paragraph preservation, safe provider errors, and explicit exact-version approval/reset. The suggestion response is intercepted with a deterministic test fixture; no LLM credentials or live provider are used. The responsive assertion checks horizontal overflow at one narrow viewport; this is not a full WCAG audit or a cross-browser matrix.
 
-Local verification for the current Phase 3 UI and service: `python -m pytest --cov=app --cov=narration --cov-report=term-missing` — 120 passed; measured line coverage is 89% combined (89% `app.py`, 92% `narration.py`). `python -m ruff check .`, `node --test tests/frontend_api.test.js` (5 passed), `node --check static/api.js`, `node --check static/app.js`, and `git diff --check` passed. `npm ci` and `npm run test:e2e` passed (4 Chromium tests). No live LLM provider was called. These are local results, not CI or deployment evidence. No remote QA deployment, non-Chromium browser, full WCAG audit, Fish Audio generation, or publishing integration was exercised.
+Local verification after PR #6 review fixes:
+
+- `python -m pytest --cov=. --cov-report=term`: 120 passed, 95% including tests (application files: `app.py` 89%, `narration.py` 92%). `python -m pytest --cov=app --cov=narration --cov-report=term-missing` reports 89% combined application coverage.
+- `python -m ruff check .`: passed.
+- `npm ci`, `npm test`: passed, 9 Node tests (5 API and 4 jsdom UI unit tests).
+- `node --experimental-test-coverage --test tests/*.test.js`: API client 100% line coverage; whole `static/app.js` 55.05% from the focused unit tests alone. This is below the 80% target for that entire legacy UI file; browser E2E exercises additional paths but is not included in this unit metric.
+- `node --check static/api.js`, `node --check static/app.js`, `git diff --check`: passed.
+- `npm run test:e2e`: 6 Chromium tests passed against the actual loopback app. Includes both directions of independent language selection on PT/EN episodes, mobile narration/Fish stage visibility, focus, draft preservation, no mutation on navigation, and save-before-approval.
+
+No live LLM provider was called. These are local results, not CI or deployment evidence. No remote QA deployment, non-Chromium browser, full WCAG audit, Fish Audio generation, or publishing integration was exercised.
 
 ### UI integration assumptions and boundaries
 
@@ -142,7 +153,7 @@ Local verification for the current Phase 3 UI and service: `python -m pytest --c
 - Voice records are local user-entered metadata. Availability is descriptive only; no Fish Audio request or identifier validation occurs.
 - The published count is a local status label, not evidence that content was sent to any external platform.
 - Import accepts text/Markdown files only. Audio upload/library management remains an API capability but is not surfaced as an audio generation/review workflow in this UI phase.
-- The core studio navigation and legacy screens remain Portuguese. Narration/review screen copy follows the episode language (`pt` or `en`); article text may use either language. This screen does not provide an independent UI-language toggle.
+- Narration and Fish-review screens provide an independent **PT-BR / EN** interface-language selector, including navigation labels and the document language. Content language and editorial text are never translated or changed by this selector. Legacy studio screens remain Portuguese.
 - The interface uses the API's existing 100,000-character limit for each manuscript field. There is no autosave; use the explicit save controls before navigating away.
 
 ## Phase 3 narration UI behavior and assumptions
@@ -151,7 +162,9 @@ Local verification for the current Phase 3 UI and service: `python -m pytest --c
 - Whole-article suggestions replace only the editable narration draft after the user chooses to use them. A paragraph suggestion replaces only the matching blank-line-delimited paragraph in the narration draft; any other draft paragraphs are retained. If the narration draft has no matching paragraph yet, unchanged source paragraphs are used to seed the remaining positions.
 - Suggestion comparisons are read-only for the original and editable for the suggestion. Copying a suggestion does not save it automatically; narration and Fish Audio script have separate explicit saves.
 - Pending requests show a live status and disable duplicate requests. The current synchronous narration API has no cancellation operation, so the UI does not offer cancellation. Provider/API details are intentionally replaced with a generic localized retry message; server credentials and provider response bodies remain server-side.
-- The screen language follows the episode's content language (`pt` or `en`); there is no separate screen-language selector. Whole article is the default suggestion scope; selected paragraph requests require choosing a source paragraph.
+- The interface language initially defaults to episode content language. Once selected, the PT-BR/EN preference lasts for the current browser page session, independently of episode language. Reloading defaults to content language again. Whole article is the default suggestion scope.
+- The approved [#50 Penpot design](http://localhost:9001/#/view?file-id=5f95b9ac-b793-81b5-8008-f6332f924e3a) is implemented as two focused stages: narration preparation, then **Review Fish Audio script**. The second stage has its own heading, active progress step, version summary, read-only original/saved-narration comparison, Fish editor and approval confirmation. Back/next moves keyboard focus to the screen heading.
+- Stage and language changes preserve unsaved narration, Fish text, suggestion edits, scope and selected paragraph in memory; they do not save or call the provider. Each save writes only the active stage's script (and selected voice on the Fish stage). The version summary distinguishes unsaved narration from saved comparison text without claiming that a manual review occurred. Leaving the script workflow or reloading discards unsaved work; there is no autosave or stage deep-link. These are local navigation defaults, not new API semantics.
 - Fish Audio approval requires a saved, non-empty exact script and a second explicit confirmation. The server persists a SHA-256 digest and timestamp for that script version, and clears approval when a different script is saved. Approval is only a local editorial decision, not a workflow status label or an audio-generation command.
 
 ## Out of scope
