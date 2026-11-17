@@ -51,10 +51,11 @@ All API routes use JSON request/response bodies unless a route serves raw audio.
 - `PUT /api/episodes/{id}/scripts/narration` and `/fish-audio` → `{"content":"..."}`. These routes only change their designated derived text.
 - `POST /api/episodes/{id}/narration-suggestions` → `{"suggestion": {...}}` for `{"scope":"article"}` or `{"scope":"paragraph","paragraph_index":0}`. Paragraph indexes are zero-based and paragraphs are separated by blank lines. Suggestions are stored separately and always have `approval_status: "pending"`; they never update any episode text field.
 - `GET /api/episodes/{id}/narration-suggestions` → `{"suggestions":[...]}` (newest first).
+- `POST /api/episodes/{id}/scripts/fish-audio-approval` → persist explicit approval for `{"content":"<exact saved script>","confirm_approval":true}`. The submitted content must be non-empty and exactly match the saved Fish Audio script, otherwise the API rejects it. Episode records expose `fish_audio_approved_sha256` and `fish_audio_approved_at`; changing the saved Fish Audio script clears both fields. This approval is local and version-specific; it does not call Fish Audio or authorize generation/publishing.
 
 Status values: `Draft`, `Preparing Script`, `Script Review`, `Ready for Generation`, `Generating Audio`, `Audio Review`, `Approved`, `Publishing`, `Published`, and `Failed`. This Phase 2 API stores workflow labels only; it does not generate audio or publish.
 
-Episode response fields: `id`, `title`, `description`, `language`, `status`, `original_article`, `narration_script`, `fish_audio_script`, `selected_voice_id`, `created_at`, and `updated_at`.
+Episode response fields: `id`, `title`, `description`, `language`, `status`, `original_article`, `narration_script`, `fish_audio_script`, `fish_audio_approved_sha256`, `fish_audio_approved_at`, `selected_voice_id`, `created_at`, and `updated_at`. The approval fields are `null` until a user confirms approval of the exact saved script.
 
 ### Voices
 
@@ -79,7 +80,7 @@ Maximum JSON body is 2 MiB. Maximum audio file size is 500 MiB. Supported extens
 
 ## Local web interface
 
-The Phase 2 browser UI is served by the same local-only Python server. Start it with `python app.py`, then open `http://127.0.0.1:8000/`. Keep it bound to loopback; the API has no authentication and is not intended to be exposed to a network. The interface assets are local files in `static/` and require no JavaScript packages, build step, external fonts, or cloud services.
+The responsive studio and Phase 3 narration-review UI are served by the same local-only Python server. Start it with `python app.py`, then open `http://127.0.0.1:8000/`. Keep it bound to loopback; the API has no authentication and is not intended to be exposed to a network. The interface assets are local files in `static/` and require no JavaScript packages, build step, external fonts, or cloud services.
 
 ## AI narration suggestions (Phase 3 service)
 
@@ -99,7 +100,8 @@ The responsive interface provides:
 - Search and status/language filters for the episode list; episodes reopen by selecting their title.
 - Portuguese (Brazil) or English content language, title, description, and article entry. Paste directly or import a UTF-8 `.txt`/`.md` article (100,000 character limit).
 - A deliberately protected original article on existing episodes. The user must first choose **Edit original article** and confirm intent; saving a changed original asks for a second confirmation and calls only the confirmed original endpoint. Previous article text remains available in the backend revision history. Creating a new episode saves its initial article as its first source version.
-- Independent, manually editable narration and Fish Audio script panels beside a read-only original for comparison. Each derived save uses its own script endpoint; derived editor actions never call the original route.
+- A responsive narration review screen for Portuguese and English episodes. The article remains read-only; users can request a whole-article or selected-paragraph suggestion, compare original and editable suggestion, explicitly keep or copy it into the separate narration draft, and save narration and Fish Audio scripts independently. A selected-paragraph change replaces only the corresponding draft paragraph and keeps all others intact. Provider failures show a generic retry/manual-edit message without technical details; pending work is announced accessibly.
+- A Fish Audio script review step with save-before-approval, explicit confirmation of the exact saved text, and durable SHA-256/version timestamp. Editing and saving a different script resets approval. Approval does not generate audio or publish.
 - A local voice library for display name, Fish Audio identifier, language, description, type, and declared availability, with episode voice selection filtered by content language.
 - Loading, empty, API/network error, saved, and validation feedback, semantic labels, keyboard-accessible controls, and narrow-screen responsive layouts.
 
@@ -120,7 +122,7 @@ Python uses the standard library at runtime. Node.js is needed only for the depe
 
 ### Browser E2E checks
 
-The Playwright suite exercises the delivered local Phase 2 UI in Chromium and starts its own loopback server with a disposable temporary data directory. It restarts that server against the same directory to verify real persistence; test data is removed afterward. No generation, Fish Audio, Transistor, publishing, audio uploads, or provider credentials are used.
+The Playwright suite exercises the delivered local studio and Phase 3 narration-review UI in Chromium and starts its own loopback server with a disposable temporary data directory. It restarts that server against the same directory to verify real persistence; test data is removed afterward. No generation, Fish Audio, Transistor, publishing, audio uploads, or provider credentials are used.
 
 Install the browser once, then run the checks from the repository root:
 
@@ -130,9 +132,9 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-The suite covers dashboard loading/empty/error-and-retry states, keyboard-oriented semantic landmarks/labels, a 375px mobile viewport, Portuguese and English episode create/list/filter/reopen flows, required-title validation, local voice registration/selection, separate manual narration/Fish scripts, deliberately confirmed and declined original edits, revision preservation, and persistence across a server restart. Error-state testing aborts a local dashboard request deliberately. The responsive assertion checks horizontal overflow at one narrow viewport; this is not a full WCAG audit or a cross-browser matrix. Browser-native and backend validation not represented in these tests remains outside the reported evidence.
+The suite covers dashboard loading/empty/error-and-retry states, semantic landmarks/labels, 375px responsive layout, Portuguese and English episode workflows, voice metadata, separate scripts, deliberate original edits, revision persistence/restart, deterministic whole-article and selected-paragraph suggestion review, paragraph preservation, safe provider errors, and explicit exact-version approval/reset. The suggestion response is intercepted with a deterministic test fixture; no LLM credentials or live provider are used. The responsive assertion checks horizontal overflow at one narrow viewport; this is not a full WCAG audit or a cross-browser matrix.
 
-Local verification for the Phase 3 service: `python -m pytest --cov=app --cov=narration --cov-report=term-missing` — 118 passed; measured line coverage is 89% combined (89% `app.py`, 92% `narration.py`). `python -m ruff check .`, `node --test tests/frontend_api.test.js` (4 passed), and both JavaScript `node --check` commands passed. `npm ci` and `npm run test:e2e` also passed (2 Chromium tests). No live LLM provider was called; provider behavior was verified with deterministic fakes. These are local results, not CI or deployment evidence. No remote QA deployment, non-Chromium browser, full WCAG audit, Fish Audio generation, or publishing integration was exercised.
+Local verification for the current Phase 3 UI and service: `python -m pytest --cov=app --cov=narration --cov-report=term-missing` — 120 passed; measured line coverage is 89% combined (89% `app.py`, 92% `narration.py`). `python -m ruff check .`, `node --test tests/frontend_api.test.js` (5 passed), `node --check static/api.js`, `node --check static/app.js`, and `git diff --check` passed. `npm ci` and `npm run test:e2e` passed (4 Chromium tests). No live LLM provider was called. These are local results, not CI or deployment evidence. No remote QA deployment, non-Chromium browser, full WCAG audit, Fish Audio generation, or publishing integration was exercised.
 
 ### UI integration assumptions and boundaries
 
@@ -140,9 +142,18 @@ Local verification for the Phase 3 service: `python -m pytest --cov=app --cov=na
 - Voice records are local user-entered metadata. Availability is descriptive only; no Fish Audio request or identifier validation occurs.
 - The published count is a local status label, not evidence that content was sent to any external platform.
 - Import accepts text/Markdown files only. Audio upload/library management remains an API capability but is not surfaced as an audio generation/review workflow in this UI phase.
-- The UI labels are Portuguese; article text may be Portuguese or English. Dates and word-count labels are presented in Portuguese locale.
+- The core studio navigation and legacy screens remain Portuguese. Narration/review screen copy follows the episode language (`pt` or `en`); article text may use either language. This screen does not provide an independent UI-language toggle.
 - The interface uses the API's existing 100,000-character limit for each manuscript field. There is no autosave; use the explicit save controls before navigating away.
+
+## Phase 3 narration UI behavior and assumptions
+
+- A request creates a stored pending suggestion through the existing local API. It is not automatically copied into narration; the user must choose **Use in draft**. **Keep current text** discards the displayed suggestion without changing either source or draft.
+- Whole-article suggestions replace only the editable narration draft after the user chooses to use them. A paragraph suggestion replaces only the matching blank-line-delimited paragraph in the narration draft; any other draft paragraphs are retained. If the narration draft has no matching paragraph yet, unchanged source paragraphs are used to seed the remaining positions.
+- Suggestion comparisons are read-only for the original and editable for the suggestion. Copying a suggestion does not save it automatically; narration and Fish Audio script have separate explicit saves.
+- Pending requests show a live status and disable duplicate requests. The current synchronous narration API has no cancellation operation, so the UI does not offer cancellation. Provider/API details are intentionally replaced with a generic localized retry message; server credentials and provider response bodies remain server-side.
+- The screen language follows the episode's content language (`pt` or `en`); there is no separate screen-language selector. Whole article is the default suggestion scope; selected paragraph requests require choosing a source paragraph.
+- Fish Audio approval requires a saved, non-empty exact script and a second explicit confirmation. The server persists a SHA-256 digest and timestamp for that script version, and clears approval when a different script is saved. Approval is only a local editorial decision, not a workflow status label or an audio-generation command.
 
 ## Out of scope
 
-This Phase 3 delivery adds only server-side LLM narration suggestions and separate pending-suggestion persistence. It does not add a browser UI for requesting or reviewing suggestions, an approval/apply workflow, Fish Audio generation, Transistor integration, cloud storage, or automatic publishing. Fish Audio model-specific tag compatibility is not validated by this service. Audio generation, approval, and publication require later implementation and explicit user workflows.
+No Fish Audio calls, audio generation/uploads, Transistor integration, cloud storage, or publishing are implemented. The service prompts for faithful adaptation but does not fact-check or guarantee output quality. Its verified documentation does not establish a complete fixed cue vocabulary, so tag compatibility is not validated. No live LLM provider was called during local tests; suggestion UI E2E uses a deterministic intercepted response, and provider error behavior uses a mocked failure.

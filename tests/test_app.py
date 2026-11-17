@@ -105,6 +105,10 @@ def test_fish_script_approval_is_explicit_saved_version_specific_and_resets_on_e
     assert approved["fish_audio_approved_at"]
     assert client("POST", approval_path, {"content": "different", "confirm_approval": True})[2]["error"]["code"] == "script_not_saved"
     assert client("PUT", script_path, {"content": script})[2]["fish_audio_approved_sha256"] == approved["fish_audio_approved_sha256"]
+    restarted_approved = create_app(tmp_path)
+    _, _, restored_approved = request_app(restarted_approved, "GET", f"/api/episodes/{episode['id']}")
+    assert restored_approved["fish_audio_approved_sha256"] == approved["fish_audio_approved_sha256"]
+    assert restored_approved["fish_audio_approved_at"] == approved["fish_audio_approved_at"]
     changed = client("PUT", script_path, {"content": script + " Edited"})[2]
     assert changed["fish_audio_approved_sha256"] is None
     assert changed["fish_audio_approved_at"] is None
