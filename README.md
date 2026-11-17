@@ -83,13 +83,28 @@ Maximum JSON body is 2 MiB. Maximum audio file size is 500 MiB. Supported extens
 
 The responsive studio and Phase 3 narration-review UI are served by the same local-only Python server. Start it with `python app.py`, then open `http://127.0.0.1:8000/`. Keep it bound to loopback; the API has no authentication and is not intended to be exposed to a network. The interface assets are local files in `static/` and require no JavaScript packages, build step, external fonts, or cloud services.
 
+## Fish Audio workflow boundary (Phase 4, user-mediated)
+
+The local studio implements a manual Codex handoff and local audio import only. It never starts generation, invokes Codex, connects to Fish Audio/MCP, calls the Fish REST API, or publishes. Starting audio generation requires a separate explicit user action in the authenticated Codex session after the user inspects the actual MCP tool schema. This environment did not expose a live MCP connection or schema, so no MCP tool names/arguments are assumed.
+
+To prepare a handoff, save and explicitly approve the exact Fish Audio script, register/select an available voice that matches the episode language, then open the episode's Fish-script review and choose **Prepare audio handoff**. The server requires a second explicit confirmation and snapshots the exact script and SHA-256, selected registered voice ID, Fish voice identifier, and model preference `Fish Audio Drama 3` (`drama-3`). It does not update the episode to “Generating Audio”. The downloaded JSON is a local handoff record, not an MCP request schema. In Codex, inspect its live Fish tool schema, use only documented fields, and confirm any generation there. The model identifier is a documented Fish preference, but its acceptance as an MCP parameter is unverified; do not infer that the MCP will honor it.
+
+After the user has manually generated and downloaded an output, select it on that pending handoff and import it. The API validates the local filename/type/size, stores the file in a fresh immutable `generations/<uuid>/` directory, associates provenance to the handoff, and records the model, selected voice, approved-script digest, and review status. Existing audio bytes are never overwritten. Each handoff accepts one import; another attempt needs a new explicitly prepared handoff. A failed Codex/MCP attempt can be recorded by category without retaining vendor error details; import validation failures leave the handoff retryable. Imported takes start pending human audio review; approval/rejection are explicit and preserve the local audio file. Imported files are playable and downloadable locally.
+
+Additional API routes:
+
+- `POST /api/episodes/{id}/generation-handoffs` with `{"confirm_handoff":true}` prepares the immutable local request snapshot; `GET` lists handoffs and their `prepared`, `imported`, or `failed` status.
+- `POST /api/episodes/{id}/generation-handoffs/{handoff-id}/import?filename=take.mp3` accepts raw local audio bytes and creates a new generation (same 500 MiB/audio extension limits as the local library).
+- `POST /api/episodes/{id}/generation-handoffs/{handoff-id}/failure` records an explicit failure category (`mcp_error`, `cancelled`, `output_unavailable`, `other`); no arbitrary provider error text is saved.
+- `POST /api/files/{file-id}/review` with `{"status":"approved"|"rejected","confirm_review":true}` records an explicit review decision without changing/deleting audio bytes.
+
 ## AI narration suggestions (Phase 3 service)
 
 `POST /api/episodes/{id}/narration-suggestions` accepts `{"scope":"article"}` to suggest for the complete original article, or `{"scope":"paragraph","paragraph_index":0}` to regenerate one zero-based, blank-line-delimited paragraph. `GET` on the same route returns the episode's stored suggestions. The source text and SHA-256 digest, suggestion, provider/model, scope/index, timestamp, and `approval_status: "pending"` are stored in a separate `narration_suggestions` table. Suggestion requests never change `original_article`, `narration_script`, or `fish_audio_script`; there is no automatic approval or application route.
 
 The replaceable provider boundary is `SuggestionProvider` in `narration.py`. The included OpenAI-compatible Chat Completions adapter is configured on the local server with `LLM_API_KEY`, optional `LLM_MODEL` (defaults to `gpt-4o-mini`), and optional `LLM_BASE_URL` (defaults to `https://api.openai.com/v1`). Keep these variables in the server process environment or another local secret manager; never expose them to browser code or commit real credentials. `LLM_BASE_URL` requires HTTPS except for loopback development endpoints. Without `LLM_API_KEY`, suggestion requests return `503 suggestion_provider_unavailable`; there is no pretend/mock result in production. Provider HTTP errors do not include response bodies or credentials in API errors. This adapter uses a server-side network call and sends the selected article text to the configured provider, so configure it only if that data transfer is acceptable. No live provider request was performed for this implementation.
 
-The prompt asks for faithful, lightly adapted delivery, preserved paragraph structure, sparse bracketed plain-language cues, and no new facts. These instructions constrain the model but cannot guarantee editorial correctness; all saved output remains an unapproved suggestion for human review. The verified Phase 1 report supports Drama 3 plain-language directions and pauses, not a complete fixed cue vocabulary; this service does not call Fish Audio or claim cue compatibility beyond that documented guidance. Fish Audio generation and Transistor remain out of scope.
+The prompt asks for faithful, lightly adapted delivery, preserved paragraph structure, sparse bracketed plain-language cues, and no new facts. These instructions constrain the model but cannot guarantee editorial correctness; all saved output remains an unapproved suggestion for human review. The verified Phase 1 report supports Drama 3 plain-language directions and pauses, not a complete fixed cue vocabulary; this service does not call Fish Audio or claim cue compatibility beyond that documented guidance. Live Fish Audio/MCP invocation and Transistor publishing remain out of scope; the manual handoff and local import are documented separately above.
 
 ### Local configuration example
 
@@ -156,7 +171,7 @@ No live LLM provider was called. These are local results, not CI or deployment e
 - The backend dashboard contract has counts and recent episodes, but no event/activity feed or generated-audio approval metric. The UI therefore presents recent episode updates as recent activity, uses the API's combined editorial/audio-review count, and does not invent an audio-approval count.
 - Voice records are local user-entered metadata. Availability is descriptive only; no Fish Audio request or identifier validation occurs.
 - The published count is a local status label, not evidence that content was sent to any external platform.
-- Import accepts text/Markdown files only. Audio upload/library management remains an API capability but is not surfaced as an audio generation/review workflow in this UI phase.
+- Article import accepts text/Markdown files. Phase 4 audio handoff, local file import, playback, version history, and explicit audio review are available on the episode generation screen; no live provider call is made.
 - Narration and Fish-review screens provide an independent **PT-BR / EN** interface-language selector, including navigation labels and the document language. Content language and editorial text are never translated or changed by this selector. Legacy studio screens remain Portuguese.
 - The interface uses the API's existing 100,000-character limit for each manuscript field. There is no autosave; use the explicit save controls before navigating away.
 
@@ -171,6 +186,27 @@ No live LLM provider was called. These are local results, not CI or deployment e
 - Stage and language changes preserve unsaved narration, Fish text, suggestion edits, scope and selected paragraph in memory; they do not save or call the provider. Each save writes only the active stage's script (and selected voice on the Fish stage). The version summary distinguishes unsaved narration from saved comparison text without claiming that a manual review occurred. Leaving the script workflow or reloading discards unsaved work; there is no autosave or stage deep-link. These are local navigation defaults, not new API semantics.
 - Fish Audio approval requires a saved, non-empty exact script and a second explicit confirmation. The server persists a SHA-256 digest and timestamp for that script version, and clears approval when a different script is saved. Approval is only a local editorial decision, not a workflow status label or an audio-generation command.
 
+### Phase 4 verification evidence (ticket #55)
+
+Exact commands run:
+
+```sh
+npm ci
+python -m pytest --cov=app --cov=narration --cov-report=term-missing
+python -m ruff check .
+npm test
+node --check static/api.js
+node --check static/app.js
+node --check tests/e2e/core-workflows.spec.js
+npm run test:e2e
+node --experimental-test-coverage --test tests/frontend_api.test.js
+git diff --check
+```
+
+Results: Python passed 126 tests with app.py 89% and narration.py 92% line coverage (90% combined); Ruff passed; Node unit/jsdom passed 11 tests; Chromium Playwright passed 12 tests; the API client module measured 100% line coverage. The Node API/E2E workflow uses deterministic fake audio bytes, not a real audio codec/output. It exercises the real local WSGI API, SQLite and temporary filesystem. Existing LLM E2E paths use deterministic provider fakes or browser intercepts; provider-unconfigured behavior uses the actual local API with no key. No Fish Audio/MCP call, Codex tool invocation, OAuth, actual audio generation, live LLM call, or Transistor operation was run. No output quality was evaluated.
+
+The local app behavior exercised as real includes handoff approval/voice checks, persisted snapshots, explicit status transitions, file type/path/size validation, creating a separate generation directory, downloading local files, and preserving an existing approved file's bytes. Real target Codex schema, model-selector acceptance, Fish result transfer, audio playback/codec, deployment QA, cross-browser QA, and full WCAG remain unverified. In particular, imported test bytes are not playable vendor output.
+
 ## Out of scope
 
-No Fish Audio calls, audio generation/uploads, Transistor integration, cloud storage, or publishing are implemented. The service prompts for faithful adaptation but does not fact-check or guarantee output quality. Its verified documentation does not establish a complete fixed cue vocabulary, so tag compatibility is not validated. No live LLM provider was called during local tests; E2E suggestion behavior uses deterministic browser fixtures and an injected local provider fake, while provider-unconfigured behavior uses the real local API without a configured key.
+No live Fish Audio MCP connection/call or audio generation was performed or implemented; the Codex handoff is user-mediated, and imported test audio is a deterministic local fake. No direct Fish REST integration, Transistor integration, cloud storage, or publishing is included. The service prompts for faithful adaptation but does not fact-check or guarantee output quality. The verified documentation does not establish a complete fixed cue vocabulary, so tag compatibility is not validated. No live LLM provider was called during local tests; narration E2E suggestion behavior uses deterministic browser fixtures and an injected local provider fake, while provider-unconfigured behavior uses the real local API without a configured key.

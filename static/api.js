@@ -58,6 +58,24 @@
       },
       voices: () => send("/api/voices"),
       registerVoice: (value) => send("/api/voices", json("POST", value)),
+      generationHandoffs: (id) => send(`/api/episodes/${encodeURIComponent(id)}/generation-handoffs`),
+      prepareGenerationHandoff: (id, confirmed) => {
+        if (confirmed !== true) throw new Error("A confirmação explícita é necessária para preparar o handoff.");
+        return send(`/api/episodes/${encodeURIComponent(id)}/generation-handoffs`, json("POST", { confirm_handoff: true }));
+      },
+      importGeneration: (episodeId, handoffId, file) => send(
+        `/api/episodes/${encodeURIComponent(episodeId)}/generation-handoffs/${encodeURIComponent(handoffId)}/import?filename=${encodeURIComponent(file.name)}`,
+        { method: "POST", body: file, headers: { "Content-Type": file.type || `audio/${file.name.split(".").pop().toLowerCase()}` } },
+      ),
+      failGenerationHandoff: (episodeId, handoffId, failureCode) => send(
+        `/api/episodes/${encodeURIComponent(episodeId)}/generation-handoffs/${encodeURIComponent(handoffId)}/failure`,
+        json("POST", { confirm_failure: true, failure_code: failureCode }),
+      ),
+      episodeFiles: (id) => send(`/api/episodes/${encodeURIComponent(id)}/files`),
+      reviewAudioFile: (id, status, confirmed) => {
+        if (confirmed !== true) throw new Error("A confirmação explícita é necessária para revisar o áudio.");
+        return send(`/api/files/${encodeURIComponent(id)}/review`, json("POST", { status, confirm_review: true }));
+      },
     });
   }
 
