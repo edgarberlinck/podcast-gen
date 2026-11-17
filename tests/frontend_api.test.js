@@ -76,6 +76,40 @@ test("suggestion scopes and exact-script approval use separate explicit API oper
   assert.deepEqual(JSON.parse(calls[2].options.body), { content: "saved script", confirm_approval: true });
 });
 
+test("generation handoffs require explicit consent and audio imports stay binary local requests", async () => {
+  const calls = [];
+  const api = createApi(async (path, options) => {
+    calls.push({ path, options });
+    return response({ handoff: { id: "handoff-1" } });
+  });
+  assert.throws(() => api.prepareGenerationHandoff("episode/1", false), /confirmação explícita/i);
+  await api.prepareGenerationHandoff("episode/1", true);
+  const audio = { name: "take one.mp3", type: "audio/mpeg" };
+  await api.importGeneration("episode/1", "handoff/1", audio);
+  assert.equal(calls[0].path, "/api/episodes/episode%2F1/generation-handoffs");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { confirm_handoff: true });
+  assert.equal(calls[1].path, "/api/episodes/episode%2F1/generation-handoffs/handoff%2F1/import?filename=take%20one.mp3");
+  assert.equal(calls[1].options.body, audio);
+  assert.equal(calls[1].options.headers["Content-Type"], "audio/mpeg");
+});
+
+test("audio review is explicitly confirmed and failure categories are reported locally", async () => {
+  const calls = [];
+  const api = createApi(async (path, options) => {
+    calls.push({ path, options });
+    return response({ approval_status: "approved" });
+  });
+  assert.throws(() => api.reviewAudioFile("file-1", "approved", false), /confirmação explícita/i);
+  await api.reviewAudioFile("file-1", "approved", true);
+  await api.failGenerationHandoff("episode-1", "handoff-1", "mcp_error");
+  assert.deepEqual(calls.map(({ path }) => path), [
+    "/api/files/file-1/review",
+    "/api/episodes/episode-1/generation-handoffs/handoff-1/failure",
+  ]);
+  assert.deepEqual(JSON.parse(calls[0].options.body), { status: "approved", confirm_review: true });
+  assert.deepEqual(JSON.parse(calls[1].options.body), { confirm_failure: true, failure_code: "mcp_error" });
+});
+
 test("unknown derived content kinds cannot select a route", () => {
   const api = createApi(async () => response({}));
   assert.throws(() => api.saveScript("episode-1", "original", "unsafe"), /desconhecido/i);

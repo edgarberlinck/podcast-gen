@@ -29,6 +29,9 @@ VOICE_TYPES = {"external", "own", "other"}
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_FILE_BYTES = 500 * 1024 * 1024
 ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"}
+FISH_AUDIO_MODEL = "drama-3"
+FISH_AUDIO_MODEL_LABEL = "Fish Audio Drama 3"
+HANDOFF_FAILURE_CODES = {"mcp_error", "cancelled", "output_unavailable", "other"}
 
 
 class ApiError(Exception):
@@ -112,7 +115,16 @@ class Studio:
                 CREATE TABLE IF NOT EXISTS files (
                     id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
                     generation_id TEXT NOT NULL, filename TEXT NOT NULL, media_type TEXT NOT NULL,
-                    size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL
+                    size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL,
+                    handoff_id TEXT, voice_id TEXT, fish_audio_id TEXT, model TEXT,
+                    script_sha256 TEXT, approval_status TEXT NOT NULL DEFAULT 'pending'
+                );
+                CREATE TABLE IF NOT EXISTS generation_handoffs (
+                    id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+                    script TEXT NOT NULL, script_sha256 TEXT NOT NULL,
+                    voice_id TEXT NOT NULL, fish_audio_id TEXT NOT NULL, voice_name TEXT NOT NULL,
+                    model TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('prepared','imported','failed')),
+                    failure_code TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS narration_suggestions (
                     id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
@@ -126,6 +138,15 @@ class Studio:
                 CREATE INDEX IF NOT EXISTS idx_suggestions_episode ON narration_suggestions(episode_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_files_episode ON files(episode_id, created_at DESC);
             """)
+            file_columns = {row[1] for row in db.execute("PRAGMA table_info(files)")}
+            for name, declaration in (
+                ("handoff_id", "TEXT"), ("voice_id", "TEXT"), ("fish_audio_id", "TEXT"),
+                ("model", "TEXT"), ("script_sha256", "TEXT"),
+                ("approval_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ):
+                if name not in file_columns:
+                    db.execute(f"ALTER TABLE files ADD COLUMN {name} {declaration}")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_handoffs_episode ON generation_handoffs(episode_id, created_at DESC)")
             columns = {row[1] for row in db.execute("PRAGMA table_info(episodes)")}
             if "fish_audio_approved_sha256" not in columns:
                 db.execute("ALTER TABLE episodes ADD COLUMN fish_audio_approved_sha256 TEXT")
@@ -301,6 +322,72 @@ class Studio:
         LOG.info("Explicitly approved Fish Audio script version for episode %s", episode["id"])
         return self.get_episode(episode["id"])
 
+    def create_generation_handoff(self, episode_id, body):
+        if set(body) != {"confirm_handoff"} or body.get("confirm_handoff") is not True:
+            if set(body) - {"confirm_handoff"}:
+                raise ApiError(400, "unknown_fields", "Only confirm_handoff is accepted.")
+            raise ApiError(400, "confirmation_required", "Set confirm_handoff=true to explicitly prepare a local Codex handoff.")
+        episode = self.get_episode(episode_id)
+        script = episode["fish_audio_script"]
+        digest = hashlib.sha256(script.encode("utf-8")).hexdigest()
+        if not script.strip() or episode["fish_audio_approved_sha256"] != digest:
+            raise ApiError(409, "script_not_approved", "Approve the exact saved Fish Audio script before preparing a handoff.")
+        voice_id = episode["selected_voice_id"]
+        if not voice_id:
+            raise ApiError(409, "voice_not_selected", "Select a registered voice before preparing a handoff.")
+        voice = self.get_voice(voice_id)
+        if voice["availability"] != "available":
+            raise ApiError(409, "voice_unavailable", "The selected voice is not marked available in the local library.")
+        if voice["language"] != episode["language"]:
+            raise ApiError(409, "voice_language_mismatch", "The selected voice language does not match the episode language.")
+        handoff_id, stamp = str(uuid.uuid4()), now()
+        with self.connect() as db:
+            db.execute("""INSERT INTO generation_handoffs
+                (id,episode_id,script,script_sha256,voice_id,fish_audio_id,voice_name,model,status,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (handoff_id, episode["id"], script, digest,
+                    voice["id"], voice["fish_audio_id"], voice["display_name"], FISH_AUDIO_MODEL,
+                    "prepared", stamp, stamp))
+        LOG.info("Prepared local Fish Audio handoff %s for episode %s", handoff_id, episode["id"])
+        return self.get_generation_handoff(handoff_id)
+
+    def get_generation_handoff(self, handoff_id):
+        try:
+            handoff_id = str(uuid.UUID(handoff_id))
+        except (ValueError, AttributeError):
+            raise ApiError(404, "not_found", "Generation handoff not found.") from None
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM generation_handoffs WHERE id=?", (handoff_id,)).fetchone()
+        if row is None:
+            raise ApiError(404, "not_found", "Generation handoff not found.")
+        return dict(row)
+
+    def list_generation_handoffs(self, episode_id):
+        episode = self.get_episode(episode_id)
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT * FROM generation_handoffs WHERE episode_id=? ORDER BY created_at DESC,id DESC",
+                (episode["id"],)).fetchall()]
+
+    def fail_generation_handoff(self, episode_id, handoff_id, body):
+        allowed = {"confirm_failure", "failure_code"}
+        if set(body) - allowed:
+            raise ApiError(400, "unknown_fields", "Unsupported generation-failure fields.")
+        if body.get("confirm_failure") is not True:
+            raise ApiError(400, "confirmation_required", "Explicit confirmation is required to record a failed handoff.")
+        code = body.get("failure_code")
+        if not isinstance(code, str) or code not in HANDOFF_FAILURE_CODES:
+            raise ApiError(400, "invalid_failure_code", "Choose a supported failure category.")
+        handoff = self.get_generation_handoff(handoff_id)
+        if handoff["episode_id"] != str(uuid.UUID(episode_id)):
+            raise ApiError(404, "not_found", "Generation handoff not found.")
+        if handoff["status"] != "prepared":
+            raise ApiError(409, "handoff_not_pending", "Only a prepared handoff can be marked failed.")
+        stamp = now()
+        with self.connect() as db:
+            db.execute("UPDATE generation_handoffs SET status='failed',failure_code=?,updated_at=? WHERE id=? AND status='prepared'",
+                       (code, stamp, handoff["id"]))
+        return self.get_generation_handoff(handoff["id"])
+
     def create_narration_suggestion(self, episode_id, body, provider):
         allowed = {"scope", "paragraph_index"}
         unknown = set(body) - allowed
@@ -412,8 +499,15 @@ class Studio:
             raise ApiError(404, "not_found", "Voice not found.")
         return dict(row)
 
-    def store_file(self, episode_id, filename, media_type, data: bytes):
+    def store_file(self, episode_id, filename, media_type, data: bytes, handoff_id=None):
         episode = self.get_episode(episode_id)
+        handoff = None
+        if handoff_id is not None:
+            handoff = self.get_generation_handoff(handoff_id)
+            if handoff["episode_id"] != episode["id"]:
+                raise ApiError(404, "not_found", "Generation handoff not found for this episode.")
+            if handoff["status"] != "prepared":
+                raise ApiError(409, "handoff_not_pending", "This handoff is not awaiting an audio import.")
         filename = safe_filename(filename)
         ext = Path(filename).suffix.lower()
         media_type = media_type.split(";", 1)[0].strip().lower() or mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -435,22 +529,65 @@ class Studio:
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temp, target)
+            if handoff:
+                handoff_metadata = {
+                    "handoff_id": handoff["id"], "script_sha256": handoff["script_sha256"],
+                    "voice_id": handoff["voice_id"], "fish_audio_id": handoff["fish_audio_id"],
+                    "model": handoff["model"], "imported_at": stamp,
+                }
+                self._atomic_text(target_dir / "result.json", json.dumps(handoff_metadata, ensure_ascii=False, indent=2))
             with self.connect() as db:
-                db.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?)",
-                           (file_id, episode["id"], generation_id, filename, media_type, len(data), stamp))
+                db.execute("""INSERT INTO files
+                    (id,episode_id,generation_id,filename,media_type,size_bytes,created_at,handoff_id,
+                     voice_id,fish_audio_id,model,script_sha256,approval_status)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (file_id, episode["id"], generation_id, filename, media_type, len(data), stamp,
+                     handoff["id"] if handoff else None, handoff["voice_id"] if handoff else None,
+                     handoff["fish_audio_id"] if handoff else None, handoff["model"] if handoff else None,
+                     handoff["script_sha256"] if handoff else None, "pending"))
+                if handoff:
+                    updated = db.execute("UPDATE generation_handoffs SET status='imported',updated_at=? WHERE id=? AND status='prepared'",
+                                         (stamp, handoff["id"]))
+                    if updated.rowcount != 1:
+                        raise ApiError(409, "handoff_not_pending", "This handoff is not awaiting an audio import.")
                 db.execute("UPDATE episodes SET updated_at=? WHERE id=?", (stamp, episode["id"]))
         except Exception:
             import shutil
             shutil.rmtree(target_dir, ignore_errors=True)
             raise
         return {"id": file_id, "episode_id": episode["id"], "generation_id": generation_id,
-                "filename": filename, "media_type": media_type, "size_bytes": len(data), "created_at": stamp}
+                "filename": filename, "media_type": media_type, "size_bytes": len(data), "created_at": stamp,
+                "handoff_id": handoff["id"] if handoff else None,
+                "voice_id": handoff["voice_id"] if handoff else None,
+                "fish_audio_id": handoff["fish_audio_id"] if handoff else None,
+                "model": handoff["model"] if handoff else None,
+                "script_sha256": handoff["script_sha256"] if handoff else None,
+                "approval_status": "pending"}
 
     def list_files(self, episode_id):
         episode = self.get_episode(episode_id)
         with self.connect() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM files WHERE episode_id=? ORDER BY created_at DESC",
+            return [dict(row) for row in db.execute("SELECT * FROM files WHERE episode_id=? ORDER BY created_at DESC,id DESC",
                                                     (episode["id"],)).fetchall()]
+
+    def review_file(self, file_id, body):
+        if set(body) - {"status", "confirm_review"}:
+            raise ApiError(400, "unknown_fields", "Unsupported audio-review fields.")
+        status = body.get("status")
+        if status not in {"approved", "rejected"}:
+            raise ApiError(400, "invalid_review_status", "Audio status must be approved or rejected.")
+        if body.get("confirm_review") is not True:
+            raise ApiError(400, "confirmation_required", "Explicit confirmation is required to review an audio version.")
+        try:
+            file_id = str(uuid.UUID(file_id))
+        except (ValueError, AttributeError):
+            raise ApiError(404, "not_found", "File not found.") from None
+        with self.connect() as db:
+            row = db.execute("SELECT id FROM files WHERE id=?", (file_id,)).fetchone()
+            if row is None:
+                raise ApiError(404, "not_found", "File not found.")
+            db.execute("UPDATE files SET approval_status=? WHERE id=?", (status, file_id))
+            return dict(db.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone())
 
     def read_file(self, file_id):
         try:
@@ -562,6 +699,28 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None):
                     return json_response(start_response, 200, studio.approve_fish_script(episode_id, read_json(environ)))
                 if len(parts) == 5 and parts[3] == "scripts" and method == "PUT":
                     return json_response(start_response, 200, studio.update_script(episode_id, parts[4], read_json(environ)))
+                if len(parts) == 4 and parts[3] == "generation-handoffs" and method == "GET":
+                    return json_response(start_response, 200, {"handoffs": studio.list_generation_handoffs(episode_id)})
+                if len(parts) == 4 and parts[3] == "generation-handoffs" and method == "POST":
+                    handoff = studio.create_generation_handoff(episode_id, read_json(environ))
+                    handoff["model_preference"] = {"label": FISH_AUDIO_MODEL_LABEL, "identifier": FISH_AUDIO_MODEL}
+                    handoff["instructions"] = (
+                        "Manual Codex handoff only. In the authenticated Codex environment, inspect the live Fish Audio MCP tool schema; "
+                        "use only fields it documents, confirm the exact script, voice and model with the user, and start generation only after that explicit confirmation. "
+                        "This studio does not call MCP and does not infer tool parameters. Save the resulting audio locally and import it as a new version."
+                    )
+                    return json_response(start_response, 201, {"handoff": handoff})
+                if len(parts) == 6 and parts[3] == "generation-handoffs" and parts[5] == "import" and method == "POST":
+                    query = parse_qs(environ.get("QUERY_STRING", ""))
+                    filename = query.get("filename", [None])[0]
+                    body = read_body(environ, MAX_FILE_BYTES, "file_too_large",
+                                     "Audio file exceeds the 500 MiB limit.")
+                    record = studio.store_file(episode_id, filename, environ.get("CONTENT_TYPE", ""), body,
+                                               handoff_id=parts[4])
+                    return json_response(start_response, 201, record)
+                if len(parts) == 6 and parts[3] == "generation-handoffs" and parts[5] == "failure" and method == "POST":
+                    return json_response(start_response, 200,
+                                         studio.fail_generation_handoff(episode_id, parts[4], read_json(environ)))
                 if len(parts) == 4 and parts[3] == "files" and method == "GET":
                     return json_response(start_response, 200, {"files": studio.list_files(episode_id)})
                 if len(parts) == 4 and parts[3] == "files" and method == "POST":
@@ -573,6 +732,8 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None):
                     return json_response(start_response, 201, file)
             if len(parts) == 3 and parts[:2] == ["api", "voices"] and method == "GET":
                 return json_response(start_response, 200, studio.get_voice(parts[2]))
+            if len(parts) == 4 and parts[:2] == ["api", "files"] and parts[3] == "review" and method == "POST":
+                return json_response(start_response, 200, studio.review_file(parts[2], read_json(environ)))
             if len(parts) == 3 and parts[:2] == ["api", "files"] and method == "GET":
                 record, data = studio.read_file(parts[2])
                 filename = record["filename"].replace('"', "")

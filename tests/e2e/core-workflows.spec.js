@@ -216,6 +216,64 @@ test("Portuguese and English drafts, voices and three text versions persist inde
   expect((await revisionsResponse.json()).revisions[0].content).toBe(portugueseOriginal);
 });
 
+test("explicit Codex handoff imports a separate audio version without calling MCP or replacing approved audio", async ({ page }) => {
+  const externalRequests = [];
+  page.on("request", (request) => {
+    if (!request.url().startsWith(baseURL) && !request.url().startsWith("data:")) externalRequests.push(request.url());
+  });
+  const created = await page.request.post(`${baseURL}/api/episodes`, {
+    data: { title: "Manual audio handoff", language: "en", original_article: "Source text." },
+  });
+  const episode = await created.json();
+  const voiceResponse = await page.request.post(`${baseURL}/api/voices`, {
+    data: { display_name: "Local narrator", fish_audio_id: "mcp-unverified-voice", language: "en", availability: "available" },
+  });
+  const voice = await voiceResponse.json();
+  await page.request.patch(`${baseURL}/api/episodes/${episode.id}`, { data: { selected_voice_id: voice.id } });
+  const script = "[calm]Approved test script.";
+  await page.request.put(`${baseURL}/api/episodes/${episode.id}/scripts/fish-audio`, { data: { content: script } });
+  await page.request.post(`${baseURL}/api/episodes/${episode.id}/scripts/fish-audio-approval`, {
+    data: { content: script, confirm_approval: true },
+  });
+  const oldUpload = await page.request.post(`${baseURL}/api/episodes/${episode.id}/files?filename=previous.mp3`, {
+    data: Buffer.from("already approved bytes"), headers: { "Content-Type": "audio/mpeg" },
+  });
+  const oldRecord = await oldUpload.json();
+  await page.request.post(`${baseURL}/api/files/${oldRecord.id}/review`, { data: { status: "approved", confirm_review: true } });
+
+  await page.goto(`${baseURL}/#generation/${episode.id}`);
+  await expect(page.getByRole("heading", { name: "Prepare and review audio" })).toBeVisible();
+  await expect(page.getByLabel("Exact approved Fish Audio script")).toHaveValue(script);
+  await expect(page.getByText("Fish Audio Drama 3 · drama-3")).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Prepare Codex handoff" }).click();
+  await expect(page.getByText("Awaiting your action in Codex")).toBeVisible();
+  await expect(page.getByText("Local narrator · drama-3")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Download handoff JSON" })).toBeVisible();
+  const handoffInput = page.locator('input[data-generation-file]');
+  await handoffInput.setInputFiles({ name: "codex-result.mp3", mimeType: "audio/mpeg", buffer: Buffer.from("local imported bytes") });
+  await expect(page.getByRole("status")).toContainText("Áudio importado como uma nova versão local");
+  await expect(page.getByText("Áudio importado · uma nova versão local foi criada")).toBeVisible();
+  const files = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/files`)).json()).files;
+  expect(files).toHaveLength(2);
+  const imported = files.find((item) => item.filename === "codex-result.mp3");
+  const preserved = files.find((item) => item.id === oldRecord.id);
+  expect(imported.generation_id).not.toBe(preserved.generation_id);
+  expect(imported.fish_audio_id).toBe(voice.fish_audio_id);
+  expect(imported.model).toBe("drama-3");
+  expect(imported.script_sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(imported.approval_status).toBe("pending");
+  expect(preserved.approval_status).toBe("approved");
+  const preservedBytes = await (await page.request.get(`${baseURL}/api/files/${oldRecord.id}`)).body();
+  expect(preservedBytes).toEqual(Buffer.from("already approved bytes"));
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Approve version" }).click();
+  const reviewed = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/files`)).json()).files;
+  expect(reviewed.find((item) => item.id === imported.id).approval_status).toBe("approved");
+  expect(reviewed.find((item) => item.id === oldRecord.id).approval_status).toBe("approved");
+  expect(externalRequests).toEqual([]);
+});
+
 test("Portuguese paragraph suggestions stay separate; saved Fish script approval is explicit and versioned", async ({ page }) => {
   const original = "Source paragraph one.\n\nSource paragraph two.\n\nSource paragraph three.";
   const narration = "Draft paragraph one.\n\nDraft paragraph two.\n\nDraft paragraph three.";

@@ -6,6 +6,7 @@
   const notice = document.getElementById("notice");
   const importInput = document.getElementById("article-import");
   const statuses = ["Draft", "Preparing Script", "Script Review", "Ready for Generation", "Generating Audio", "Audio Review", "Approved", "Publishing", "Published", "Failed"];
+  const FISH_AUDIO_MODEL_LABEL = "Fish Audio Drama 3";
   let pageRequest = 0;
   let currentRoute = "";
   let originalUnlocked = false;
@@ -85,6 +86,7 @@
       if (route[0] === "episode" && route[1] === "new") return renderEpisodeEditor(null);
       if (route[0] === "episode" && route[1]) return await renderEpisodeEditor(route[1], requestId);
       if (route[0] === "scripts" && route[1]) return await renderScripts(route[1], requestId);
+      if (route[0] === "generation" && route[1]) return await renderGeneration(route[1], requestId);
       if (route[0] === "voices") return await renderVoices(requestId);
       return await renderDashboard(requestId);
     } catch (error) {
@@ -249,7 +251,7 @@
       <section class="fish-next-step"><span class="eyebrow">03 · ${h(strings.fish)}</span><h2>${h(strings.fishTitle)}</h2><p>${h(strings.nextCopy)}</p><button class="button" data-action="review-stage" data-stage="fish" ${scriptReview.saving ? "disabled" : ""}>${h(strings.next)}</button></section>
       ` : `
       <section class="version-summary" aria-label="${h(strings.summary)}"><div><strong>01 · ${h(strings.original)}</strong><p>${h(strings.preserved)}</p></div><div><strong>02 · ${h(strings.narration)}</strong><p>${h(scriptReview.narrationDraft !== episode.narration_script ? strings.unsaved : episode.narration_script ? strings.saved : strings.empty)}</p></div><div><strong>03 · ${h(strings.fish)}</strong><p>${h(scriptReview.fishDraft !== episode.fish_audio_script ? strings.unsaved : episode.fish_audio_script ? strings.savedVersion : strings.empty)}</p></div></section>
-      <div class="fish-review-layout"><section class="fish-review"><header><span class="eyebrow">03 · ${h(strings.manual)}</span><h2>${h(strings.fish)}</h2></header><label for="script-voice">${h(strings.voiceReference)}</label><select id="script-voice"><option value="">${english ? "No voice selected" : "Sem voz selecionada"}</option>${voices.filter((voice) => voice.language === episode.language).map((voice) => `<option value="${h(voice.id)}" ${scriptReview.voiceId === voice.id ? "selected" : ""}>${h(voice.display_name)} · ${langShort(voice.language)}</option>`).join("")}</select><label for="fish-script">${h(strings.fish)}</label><textarea lang="${h(episode.language)}" id="fish-script" maxlength="100000" aria-label="${english ? "Editable Fish Audio script" : "Script Fish Audio editável"}" placeholder="${h(strings.fish)}…">${h(scriptReview.fishDraft)}</textarea><div class="fish-approval-state" id="fish-approval-state" aria-live="polite"></div><p class="muted">${selectedVoice ? `${h(strings.voiceReference)} · ${h(selectedVoice.display_name)} · ${h(selectedVoice.fish_audio_id)}` : h(strings.noVoice)}</p><p class="muted">${h(strings.approvalCopy)}</p><button class="button primary" data-action="open-approval">${h(strings.approve)}</button></section>
+      <div class="fish-review-layout"><section class="fish-review"><header><span class="eyebrow">03 · ${h(strings.manual)}</span><h2>${h(strings.fish)}</h2></header><label for="script-voice">${h(strings.voiceReference)}</label><select id="script-voice"><option value="">${english ? "No voice selected" : "Sem voz selecionada"}</option>${voices.filter((voice) => voice.language === episode.language).map((voice) => `<option value="${h(voice.id)}" ${scriptReview.voiceId === voice.id ? "selected" : ""}>${h(voice.display_name)} · ${langShort(voice.language)}</option>`).join("")}</select><label for="fish-script">${h(strings.fish)}</label><textarea lang="${h(episode.language)}" id="fish-script" maxlength="100000" aria-label="${english ? "Editable Fish Audio script" : "Script Fish Audio editável"}" placeholder="${h(strings.fish)}…">${h(scriptReview.fishDraft)}</textarea><div class="fish-approval-state" id="fish-approval-state" aria-live="polite"></div><p class="muted">${selectedVoice ? `${h(strings.voiceReference)} · ${h(selectedVoice.display_name)} · ${h(selectedVoice.fish_audio_id)}` : h(strings.noVoice)}</p><p class="muted">${h(strings.approvalCopy)}</p><button class="button primary" data-action="open-approval">${h(strings.approve)}</button><a class="button secondary" href="#generation/${encodeURIComponent(episode.id)}">${h(english ? "Prepare audio handoff →" : "Preparar handoff de áudio →")}</a></section>
       <aside class="approval-comparison"><h2>${h(strings.comparison)}</h2><section class="version-card original"><header class="version-header"><h3>${h(strings.original)} · ${h(strings.readOnly)}</h3></header><div class="version-body"><textarea aria-label="${english ? "Original article for comparison" : "Artigo original para comparação"}" readonly>${h(episode.original_article)}</textarea></div></section><section class="version-card narration"><header class="version-header"><h3>${h(strings.savedNarration)} · ${h(strings.readOnly)}</h3></header><div class="version-body"><textarea aria-label="${h(strings.savedNarration)}" readonly>${h(episode.narration_script)}</textarea></div></section></aside></div>
       <dialog id="approval-dialog" class="approval-dialog" aria-labelledby="approval-title"><form method="dialog"><p class="eyebrow">${english ? "EXPLICIT APPROVAL · NO AUTOMATION" : "APROVAÇÃO EXPLÍCITA · SEM AUTOMAÇÃO"}</p><h2 id="approval-title">${h(strings.approve)}?</h2><p>${h(episode.title)}</p><p>${h(strings.confirmation)}</p><p>${h(strings.savedVersion)} · ${h(strings.saved)}</p><div class="dialog-actions"><button class="button secondary" value="cancel">${h(strings.cancel)}</button><button class="button primary" value="confirm" data-action="confirm-approval">${h(strings.confirm)}</button></div></form></dialog>
       <button class="button secondary" data-action="review-stage" data-stage="narration" ${scriptReview.saving ? "disabled" : ""}>${h(strings.back)}</button>
@@ -377,6 +379,54 @@
       dialog.close();
       showNotice(review.language === "en" ? "Could not approve this script. Reload and verify the saved version." : "Não foi possível aprovar este script. Recarregue e confira a versão salva.", "error");
     } finally { confirmButton.disabled = false; }
+  }
+
+  async function renderGeneration(id, requestId) {
+    setNav("episodes", "Episódios / Gerar e revisar áudio");
+    const [episode, handoffResult, fileResult, voiceResult] = await Promise.all([
+      api.episode(id), api.generationHandoffs(id), api.episodeFiles(id), api.voices(),
+    ]);
+    if (requestId !== pageRequest) return;
+    const english = episode.language === "en";
+    setShellLanguage(episode.language);
+    const voice = (voiceResult.voices || []).find((item) => item.id === episode.selected_voice_id);
+    const approved = !!episode.fish_audio_approved_sha256 && !!episode.fish_audio_script.trim();
+    const handoffs = handoffResult.handoffs || [];
+    const files = fileResult.files || [];
+    const labels = english ? {
+      title: "Prepare and review audio", intro: "Manual Codex handoff · local audio import · no automatic provider calls.",
+      safety: "Generation starts only after your separate confirmation in Codex.", safetyCopy: "This studio does not connect to Fish Audio, guess MCP arguments, or replace an existing version.",
+      script: "Exact approved Fish Audio script", voice: "Selected registered voice", model: "Model preference",
+      notReady: "Approve the saved Fish Audio script and select an available registered voice before preparing a handoff.",
+      prepare: "Prepare Codex handoff →", confirm: "Prepare a local handoff for this exact approved script and selected voice? No audio will be generated here.",
+      handoffs: "Handoff status", history: "Audio versions", empty: "No local audio versions yet.",
+      import: "Import the audio file returned by your manual Codex workflow", choose: "Choose audio file", importButton: "Import as a new version",
+      manual: "In Codex, inspect the actual Fish Audio MCP schema and use only its documented fields. Confirm generation explicitly in Codex. The configured MCP connection and model selector are not verified here.",
+      failure: "Record a Codex/MCP failure", recordFailure: "Record failure", pending: "Awaiting your action in Codex", imported: "Audio imported · a separate local version was created", failed: "Handoff failed", noMcp: "No MCP call or generation was started by this studio.",
+    } : {
+      title: "Preparar e revisar áudio", intro: "Handoff manual no Codex · importação local · nenhuma chamada automática ao provedor.",
+      safety: "A geração só começa após sua confirmação separada no Codex.", safetyCopy: "Este estúdio não se conecta ao Fish Audio, não presume argumentos MCP e não substitui versões existentes.",
+      script: "Script Fish Audio exato aprovado", voice: "Voz registrada selecionada", model: "Preferência de modelo",
+      notReady: "Aprove o script Fish Audio salvo e selecione uma voz registrada disponível antes de preparar o handoff.",
+      prepare: "Preparar handoff no Codex →", confirm: "Preparar um handoff local para este script aprovado e esta voz? Nenhum áudio será gerado aqui.",
+      handoffs: "Status dos handoffs", history: "Versões de áudio", empty: "Ainda não há versões de áudio locais.",
+      import: "Importe o arquivo de áudio obtido pelo fluxo manual no Codex", choose: "Escolher arquivo de áudio", importButton: "Importar como nova versão",
+      manual: "No Codex, inspecione o esquema real do Fish Audio MCP e use somente campos documentados. Confirme a geração explicitamente no Codex. A conexão MCP e o seletor de modelo não foram verificados aqui.",
+      failure: "Registrar uma falha do Codex/MCP", recordFailure: "Registrar falha", pending: "Aguardando sua ação no Codex", imported: "Áudio importado · uma nova versão local foi criada", failed: "Handoff falhou", noMcp: "Este estúdio não iniciou chamada MCP nem geração.",
+    };
+    const statusText = (status) => status === "prepared" ? labels.pending : status === "imported" ? labels.imported : labels.failed;
+    const handoffRows = handoffs.length ? handoffs.map((item) => `<article class="generation-handoff"><strong>${h(statusText(item.status))}</strong><span>${h(item.voice_name)} · ${h(item.model)} · ${h(dateLabel(item.created_at))}</span>${item.failure_code ? `<small>${h(item.failure_code)}</small>` : ""}${item.status === "prepared" ? `<label>${h(labels.failure)} <select data-handoff-failure="${h(item.id)}"><option value="mcp_error">MCP error</option><option value="cancelled">Cancelled</option><option value="output_unavailable">Output unavailable</option><option value="other">Other</option></select></label><button class="button secondary small" data-action="record-handoff-failure" data-id="${h(item.id)}">${h(labels.recordFailure)}</button><div class="generation-error" data-handoff-error="${h(item.id)}" role="alert"></div><p>${h(labels.manual)}</p><a download="codex-handoff-${h(item.id)}.json" href="data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify({ handoff_id: item.id, script: item.script, script_sha256: item.script_sha256, voice: { display_name: item.voice_name, fish_audio_id: item.fish_audio_id }, model_preference: { label: FISH_AUDIO_MODEL_LABEL, identifier: item.model }, instructions: labels.manual }, null, 2))}">Download handoff JSON</a><label>${h(labels.import)}<input type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,audio/*" data-generation-file="${h(item.id)}"></label>` : ""}</article>`).join("") : `<p>${h(labels.empty)}</p>`;
+    const history = files.length ? files.map((item, index) => `<article class="audio-version"><div><strong>Version ${files.length - index} · ${h(item.approval_status || "pending")}</strong><span>${h(item.voice_name || (item.fish_audio_id ? item.fish_audio_id : "Local audio import"))} ${item.model ? `· ${h(item.model)}` : ""} · ${h(dateLabel(item.created_at))}</span><span>${h(item.filename)} · ${Number(item.size_bytes).toLocaleString()} bytes</span>${item.script_sha256 ? `<code>Script SHA-256 · ${h(item.script_sha256)}</code>` : ""}</div><audio controls preload="none" src="/api/files/${encodeURIComponent(item.id)}">Audio playback is not supported by this browser.</audio><a href="/api/files/${encodeURIComponent(item.id)}">Download audio</a>${item.handoff_id && item.approval_status !== "approved" ? `<div class="audio-review-actions"><button class="button secondary small" data-action="review-audio" data-id="${h(item.id)}" data-status="rejected">${english ? "Reject" : "Rejeitar versão"}</button><button class="button small" data-action="review-audio" data-id="${h(item.id)}" data-status="approved">${english ? "Approve version" : "Aprovar versão"}</button></div>` : item.approval_status === "approved" ? `<strong>🔒 ${english ? "Approved · preserved" : "Aprovada · preservada"}</strong>` : ""}</article>`).join("") : `<p>${h(labels.empty)}</p>`;
+    view.innerHTML = `${heading(labels.title, `${episode.title} · ${labels.intro}`)}
+      <section class="editorial-safety"><strong>✓ ${h(labels.safety)}</strong><p>${h(labels.safetyCopy)} ${h(labels.noMcp)}</p></section>
+      <div class="generation-columns"><section class="panel generation-setup"><span class="eyebrow">${h(labels.script)}</span><textarea readonly aria-label="${h(labels.script)}">${h(episode.fish_audio_script)}</textarea>
+       <p>${approved ? (english ? "Exact saved script approved." : "Script salvo exato aprovado.") : h(labels.notReady)}</p>
+       <h3>${h(labels.voice)}</h3><p>${voice ? `${h(voice.display_name)} · ${h(voice.fish_audio_id)} · ${h(voice.availability)}` : h(english ? "No registered voice selected." : "Nenhuma voz registrada selecionada.")}</p>
+       <h3>${h(labels.model)}</h3><p><strong>Fish Audio Drama 3 · drama-3</strong></p><p class="muted">${h(labels.manual)}</p>
+       <button class="button primary" data-action="prepare-handoff" ${approved && voice && voice.availability === "available" && voice.language === episode.language ? "" : "disabled"}>${h(labels.prepare)}</button><div class="generation-error" id="generation-error" role="alert"></div>
+      </section><section class="panel"><h2>${h(labels.handoffs)}</h2>${handoffRows}</section></div>
+      <section class="panel generation-history"><h2>${h(labels.history)}</h2><p class="muted">${english ? "Every import receives a new directory. Existing and approved audio files are never replaced." : "Cada importação recebe uma nova pasta. Áudios existentes e aprovados nunca são substituídos."}</p>${history}</section>
+      <a class="button secondary" href="#scripts/${encodeURIComponent(episode.id)}">${english ? "Back to script review" : "Voltar à revisão do script"}</a>`;
   }
 
   async function renderVoices(requestId) {
@@ -589,6 +639,60 @@
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     if (action === "retry") go(button.dataset.hash || "#dashboard");
+    if (action === "prepare-handoff") {
+      if (!window.confirm("Prepare this local handoff? Audio generation only happens after a separate confirmation in Codex.")) return;
+      button.disabled = true;
+      const errorBox = document.getElementById("generation-error");
+      try {
+        const route = currentRoute.slice(1).split("/");
+        await api.prepareGenerationHandoff(route[1], true);
+        await loadRoute();
+      } catch (error) {
+        if (errorBox) errorBox.textContent = error.message;
+        button.disabled = false;
+      }
+    }
+    if (action === "record-handoff-failure") {
+      const handoffId = button.dataset.id;
+      const errorBox = document.querySelector(`[data-handoff-error="${CSS.escape(handoffId)}"]`);
+      if (!window.confirm("Record this handoff as failed? This does not retry or call Fish Audio.")) return;
+      button.disabled = true;
+      try {
+        const route = currentRoute.slice(1).split("/");
+        const select = document.querySelector(`[data-handoff-failure="${CSS.escape(handoffId)}"]`);
+        await api.failGenerationHandoff(route[1], handoffId, select.value);
+        await loadRoute();
+      } catch (error) {
+        if (errorBox) errorBox.textContent = error.message;
+        button.disabled = false;
+      }
+    }
+    if (action === "review-audio") {
+      if (!window.confirm(button.dataset.status === "approved" ? "Approve this audio version? Other versions remain unchanged." : "Reject this audio version? The local file remains preserved.")) return;
+      button.disabled = true;
+      try {
+        await api.reviewAudioFile(button.dataset.id, button.dataset.status, true);
+        await loadRoute();
+      } catch (error) {
+        showNotice(error.message, "error");
+        button.disabled = false;
+      }
+    }
+  });
+  view.addEventListener("change", async (event) => {
+    const input = event.target.closest("[data-generation-file]");
+    const file = input && input.files && input.files[0];
+    if (!file) return;
+    try {
+      const route = currentRoute.slice(1).split("/");
+      await api.importGeneration(route[1], input.dataset.generationFile, file);
+      await loadRoute();
+      showNotice("Áudio importado como uma nova versão local. Nenhum arquivo anterior foi alterado.");
+    } catch (error) {
+      const handoffError = document.querySelector(`[data-handoff-error="${CSS.escape(input.dataset.generationFile)}"]`);
+      if (handoffError) handoffError.textContent = error.message;
+      input.value = "";
+    }
   });
   importInput.addEventListener("change", async () => {
     const file = importInput.files && importInput.files[0];
