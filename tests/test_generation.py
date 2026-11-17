@@ -138,6 +138,7 @@ def test_failure_and_audio_review_are_explicit_and_never_delete_audio(client, ge
     failure_path = f"/api/episodes/{episode_id}/generation-handoffs/{handoff_id}/failure"
     assert client("POST", failure_path, {"failure_code": "mcp_error"})[2]["error"]["code"] == "confirmation_required"
     assert client("POST", failure_path, {"confirm_failure": True, "failure_code": "raw-secret"})[0] == 400
+    assert client("POST", failure_path, {"confirm_failure": True, "failure_code": []})[0] == 400
     status, _, failure = client("POST", failure_path, {"confirm_failure": True, "failure_code": "mcp_error"})
     assert status == 200 and failure["status"] == "failed" and failure["failure_code"] == "mcp_error"
     assert client("POST", failure_path, {"confirm_failure": True, "failure_code": "other"})[2]["error"]["code"] == "handoff_not_pending"
@@ -149,9 +150,26 @@ def test_failure_and_audio_review_are_explicit_and_never_delete_audio(client, ge
     review_path = f"/api/files/{audio['id']}/review"
     assert client("POST", review_path, {"status": "approved"})[2]["error"]["code"] == "confirmation_required"
     assert client("POST", review_path, {"status": "maybe", "confirm_review": True})[0] == 400
+    assert client("POST", review_path, {"status": [], "confirm_review": True})[0] == 400
     assert client("POST", review_path, {"status": "approved", "confirm_review": True})[2]["approval_status"] == "approved"
     assert client("POST", review_path, {"status": "rejected", "confirm_review": True})[2]["approval_status"] == "rejected"
     assert client("GET", f"/api/files/{audio['id']}")[2] == b"keep me"
+
+
+def test_existing_audio_library_receives_additive_handoff_metadata_migration(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "studio.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE episodes (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL)")
+        db.execute("""CREATE TABLE files (
+            id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id),
+            generation_id TEXT NOT NULL, filename TEXT NOT NULL, media_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL)""")
+    Studio(tmp_path)
+    with sqlite3.connect(database) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(files)")}
+    assert {"handoff_id", "voice_id", "fish_audio_id", "model", "script_sha256", "approval_status"} <= columns
 
 
 def test_handoff_scope_and_voice_constraints(tmp_path):

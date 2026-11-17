@@ -377,8 +377,9 @@ class Studio:
         code = body.get("failure_code")
         if not isinstance(code, str) or code not in HANDOFF_FAILURE_CODES:
             raise ApiError(400, "invalid_failure_code", "Choose a supported failure category.")
+        episode = self.get_episode(episode_id)
         handoff = self.get_generation_handoff(handoff_id)
-        if handoff["episode_id"] != str(uuid.UUID(episode_id)):
+        if handoff["episode_id"] != episode["id"]:
             raise ApiError(404, "not_found", "Generation handoff not found.")
         if handoff["status"] != "prepared":
             raise ApiError(409, "handoff_not_pending", "Only a prepared handoff can be marked failed.")
@@ -574,7 +575,7 @@ class Studio:
         if set(body) - {"status", "confirm_review"}:
             raise ApiError(400, "unknown_fields", "Unsupported audio-review fields.")
         status = body.get("status")
-        if status not in {"approved", "rejected"}:
+        if not isinstance(status, str) or status not in {"approved", "rejected"}:
             raise ApiError(400, "invalid_review_status", "Audio status must be approved or rejected.")
         if body.get("confirm_review") is not True:
             raise ApiError(400, "confirmation_required", "Explicit confirmation is required to review an audio version.")

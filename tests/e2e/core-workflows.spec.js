@@ -253,7 +253,7 @@ test("explicit Codex handoff imports a separate audio version without calling MC
   const handoffInput = page.locator('input[data-generation-file]');
   await handoffInput.setInputFiles({ name: "codex-result.mp3", mimeType: "audio/mpeg", buffer: Buffer.from("local imported bytes") });
   await expect(page.getByRole("status")).toContainText("Áudio importado como uma nova versão local");
-  await expect(page.getByText("Áudio importado · uma nova versão local foi criada")).toBeVisible();
+  await expect(page.getByText("Audio imported · a separate local version was created")).toBeVisible();
   const files = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/files`)).json()).files;
   expect(files).toHaveLength(2);
   const imported = files.find((item) => item.filename === "codex-result.mp3");
