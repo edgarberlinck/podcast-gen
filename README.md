@@ -46,6 +46,8 @@ All API routes use JSON request/response bodies unless a route serves raw audio.
 - `PUT /api/episodes/{id}/original` → `{"content":"...","confirm_edit":true}`. Confirmation is mandatory; old versions are retained in the revision log.
 - `GET /api/episodes/{id}/revisions` → `{"revisions":[...]}` (newest first).
 - `PUT /api/episodes/{id}/scripts/narration` and `/fish-audio` → `{"content":"..."}`. These routes only change their designated derived text.
+- `POST /api/episodes/{id}/narration-suggestions` → `{"suggestion": {...}}` for `{"scope":"article"}` or `{"scope":"paragraph","paragraph_index":0}`. Paragraph indexes are zero-based and paragraphs are separated by blank lines. Suggestions are stored separately and always have `approval_status: "pending"`; they never update any episode text field.
+- `GET /api/episodes/{id}/narration-suggestions` → `{"suggestions":[...]}` (newest first).
 
 Status values: `Draft`, `Preparing Script`, `Script Review`, `Ready for Generation`, `Generating Audio`, `Audio Review`, `Approved`, `Publishing`, `Published`, and `Failed`. This Phase 2 API stores workflow labels only; it does not generate audio or publish.
 
@@ -75,6 +77,18 @@ Maximum JSON body is 2 MiB. Maximum audio file size is 500 MiB. Supported extens
 ## Local web interface
 
 The Phase 2 browser UI is served by the same local-only Python server. Start it with `python app.py`, then open `http://127.0.0.1:8000/`. Keep it bound to loopback; the API has no authentication and is not intended to be exposed to a network. The interface assets are local files in `static/` and require no JavaScript packages, build step, external fonts, or cloud services.
+
+## AI narration suggestions (Phase 3 service)
+
+`POST /api/episodes/{id}/narration-suggestions` accepts `{"scope":"article"}` to suggest for the complete original article, or `{"scope":"paragraph","paragraph_index":0}` to regenerate one zero-based, blank-line-delimited paragraph. `GET` on the same route returns the episode's stored suggestions. The source text and SHA-256 digest, suggestion, provider/model, scope/index, timestamp, and `approval_status: "pending"` are stored in a separate `narration_suggestions` table. Suggestion requests never change `original_article`, `narration_script`, or `fish_audio_script`; there is no automatic approval or application route.
+
+The replaceable provider boundary is `SuggestionProvider` in `narration.py`. The included OpenAI-compatible Chat Completions adapter is configured on the local server with `LLM_API_KEY`, optional `LLM_MODEL` (defaults to `gpt-4o-mini`), and optional `LLM_BASE_URL` (defaults to `https://api.openai.com/v1`). Keep these variables in the server process environment or another local secret manager; never expose them to browser code or commit real credentials. `LLM_BASE_URL` requires HTTPS except for loopback development endpoints. Without `LLM_API_KEY`, suggestion requests return `503 suggestion_provider_unavailable`; there is no pretend/mock result in production. Provider HTTP errors do not include response bodies or credentials in API errors. This adapter uses a server-side network call and sends the selected article text to the configured provider, so configure it only if that data transfer is acceptable. No live provider request was performed for this implementation.
+
+The prompt asks for faithful, lightly adapted delivery, preserved paragraph structure, sparse bracketed plain-language cues, and no new facts. These instructions constrain the model but cannot guarantee editorial correctness; all saved output remains an unapproved suggestion for human review. The verified Phase 1 report supports Drama 3 plain-language directions and pauses, not a complete fixed cue vocabulary; this service does not call Fish Audio or claim cue compatibility beyond that documented guidance. Fish Audio generation and Transistor remain out of scope.
+
+### Local configuration example
+
+Copy `.env.example` as a reference only; the app does not load dotenv files. Export the variables into the shell that starts `python app.py`, or configure them through a local secret manager. The actual API key is intentionally absent from the example file.
 
 The responsive interface provides:
 
