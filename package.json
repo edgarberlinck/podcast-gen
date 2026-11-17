@@ -1,0 +1,13 @@
+{
+  "name": "codigo-cicatriz-local-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dependency-free Playwright browser checks for the local studio workflows",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1"
+  }
+}
