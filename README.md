@@ -101,6 +101,22 @@ node --check static/app.js
 
 Python uses the standard library at runtime. Node.js is needed only for the dependency-free JavaScript API client tests and syntax checks. The browser UI is served directly from the Python app; no npm install/build is required.
 
+### Browser E2E checks
+
+The Playwright suite exercises the delivered local Phase 2 UI in Chromium and starts its own loopback server with a disposable temporary data directory. It restarts that server against the same directory to verify real persistence; test data is removed afterward. No generation, Fish Audio, Transistor, publishing, audio uploads, or provider credentials are used.
+
+Install the browser once, then run the checks from the repository root:
+
+```sh
+npm ci
+npx playwright install chromium
+npm run test:e2e
+```
+
+The suite covers dashboard loading/empty/error-and-retry states, keyboard-oriented semantic landmarks/labels, a 375px mobile viewport, Portuguese and English episode create/list/filter/reopen flows, required-title validation, local voice registration/selection, separate manual narration/Fish scripts, deliberately confirmed and declined original edits, revision preservation, and persistence across a server restart. Error-state testing aborts a local dashboard request deliberately. The responsive assertion checks horizontal overflow at one narrow viewport; this is not a full WCAG audit or a cross-browser matrix. Browser-native and backend validation not represented in these tests remains outside the reported evidence.
+
+QA run in this workspace: `npm run test:e2e` — 2 Playwright tests passed in Chromium, including a real temporary-server restart. `python -m pytest --cov=app --cov-report=term-missing` — 100 passed, 89% app.py line coverage. `python -m ruff check .`, `node --test tests/frontend_api.test.js`, and both JavaScript `node --check` commands passed. These are local test results, not CI or deployment evidence. The test target was the application and API running locally; no remote QA deployment, non-Chromium browser, full WCAG audit, live provider, audio generation, or publishing integration was exercised.
+
 ### UI integration assumptions and boundaries
 
 - The backend dashboard contract has counts and recent episodes, but no event/activity feed or generated-audio approval metric. The UI therefore presents recent episode updates as recent activity, uses the API's combined editorial/audio-review count, and does not invent an audio-approval count.
