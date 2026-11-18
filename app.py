@@ -834,7 +834,8 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None, tra
 
     def static_response(start_response, asset):
         content_types = {"index.html": "text/html; charset=utf-8", "styles.css": "text/css; charset=utf-8",
-                         "api.js": "text/javascript; charset=utf-8", "app.js": "text/javascript; charset=utf-8"}
+                         "refresh.css": "text/css; charset=utf-8", "api.js": "text/javascript; charset=utf-8",
+                         "app.js": "text/javascript; charset=utf-8"}
         payload = (Path(__file__).parent / "static" / asset).read_bytes()
         headers = [("Content-Type", content_types[asset]), ("Content-Length", str(len(payload))),
                    ("Cache-Control", "no-cache"), ("X-Content-Type-Options", "nosniff")]
@@ -849,7 +850,7 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None, tra
                 return static_response(start_response, "index.html")
             if path.startswith("/static/") and method == "GET":
                 asset = path.removeprefix("/static/")
-                if asset not in {"styles.css", "api.js", "app.js"}:
+                if asset not in {"styles.css", "refresh.css", "api.js", "app.js"}:
                     return json_response(start_response, 404, {"error": {"code": "not_found", "message": "Asset not found."}})
                 return static_response(start_response, asset)
             if path == "/health" and method == "GET":

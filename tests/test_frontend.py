@@ -27,10 +27,12 @@ def test_local_app_serves_interface_assets(tmp_path):
     assert headers["Content-Type"] == "text/html; charset=utf-8"
     assert b"/static/app.js" in body
     assert b"/static/styles.css" in body
+    assert b"/static/refresh.css" in body
     for name, media_type, expected in [
         ("api.js", "text/javascript; charset=utf-8", b"saveOriginal"),
         ("app.js", "text/javascript; charset=utf-8", b"requestSuggestion"),
         ("styles.css", "text/css; charset=utf-8", b"@media(max-width:720px)"),
+        ("refresh.css", "text/css; charset=utf-8", b"#B51222"),
     ]:
         status, headers, body = request(app, f"/static/{name}")
         assert status == 200
