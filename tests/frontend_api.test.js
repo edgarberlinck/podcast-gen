@@ -137,9 +137,9 @@ test("unknown derived content kinds cannot select a route", () => {
   assert.throws(() => api.saveScript("episode-1", "original", "unsafe"), /desconhecido/i);
 });
 
-test("API errors and unavailable local server are surfaced to the UI", async () => {
-  const failedApi = createApi(async () => response({ error: { message: "Invalid episode" } }, 400));
-  await assert.rejects(failedApi.dashboard(), /Invalid episode/);
+test("API errors preserve safe contract codes and unavailable local server is surfaced to the UI", async () => {
+  const failedApi = createApi(async () => response({ error: { code: "transistor_creation_uncertain", message: "Inspect Transistor manually." } }, 502));
+  await assert.rejects(failedApi.dashboard(), (error) => error.message === "Inspect Transistor manually." && error.code === "transistor_creation_uncertain");
   const unavailableApi = createApi(async () => { throw new Error("offline"); });
   await assert.rejects(unavailableApi.voices(), /conectar ao estúdio local/i);
 });

@@ -23,7 +23,9 @@
       const payload = contentType.includes("application/json") ? await response.json() : null;
       if (!response.ok) {
         const detail = payload && payload.error && payload.error.message;
-        throw new Error(detail || `A solicitação falhou (${response.status}).`);
+        const error = new Error(detail || `A solicitação falhou (${response.status}).`);
+        error.code = payload && payload.error && payload.error.code;
+        throw error;
       }
       return payload;
     }
