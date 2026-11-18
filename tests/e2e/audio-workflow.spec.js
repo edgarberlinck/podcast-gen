@@ -286,13 +286,7 @@ test("two local WAV imports remain playable/downloadable, review decisions retai
   await expectEpisodeNotGenerating(page, episode.id);
   const afterFiles = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/files`)).json()).files;
   expect(afterFiles).toHaveLength(3);
-  expect(afterFiles.find((item) => item.id === prior.id)).toMatchObject({
-    filename: priorMetadata.filename,
-    media_type: priorMetadata.media_type,
-    size_bytes: priorMetadata.size_bytes,
-    created_at: priorMetadata.created_at,
-    approval_status: "approved",
-  });
+  expect(afterFiles.find((item) => item.id === prior.id)).toEqual(priorMetadata);
   expect(await (await page.request.get(`${baseURL}/api/files/${prior.id}`)).body()).toEqual(before);
   expect(await (await page.request.get(`${baseURL}/api/files/${firstTake.id}`)).body()).toEqual(audioBytes);
   expect(await (await page.request.get(`${baseURL}/api/files/${secondTake.id}`)).body()).toEqual(audioBytes);
