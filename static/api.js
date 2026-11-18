@@ -72,6 +72,19 @@
         json("POST", { confirm_failure: true, failure_code: failureCode }),
       ),
       episodeFiles: (id) => send(`/api/episodes/${encodeURIComponent(id)}/files`),
+      transistorShows: () => send("/api/transistor/shows"),
+      transistorPublication: (id) => send(`/api/episodes/${encodeURIComponent(id)}/transistor`),
+      createTransistorDraft: (id, value, confirmed) => {
+        if (confirmed !== true) throw new Error("Explicit confirmation is required to upload audio to Transistor.");
+        return send(`/api/episodes/${encodeURIComponent(id)}/transistor/draft`, json("POST", { ...value, confirm_upload: true }));
+      },
+      refreshTransistorPublication: (id) => send(`/api/episodes/${encodeURIComponent(id)}/transistor/refresh`, json("POST", {})),
+      publishTransistorEpisode: (id, status, publishedAt, confirmed) => {
+        if (confirmed !== true) throw new Error("A separate explicit confirmation is required to publish or schedule.");
+        return send(`/api/episodes/${encodeURIComponent(id)}/transistor/publish`, json("POST", {
+          status, ...(publishedAt ? { published_at: publishedAt } : {}), confirm_publish: true,
+        }));
+      },
       reviewAudioFile: (id, status, confirmed) => {
         if (confirmed !== true) throw new Error("A confirmação explícita é necessária para revisar o áudio.");
         return send(`/api/files/${encodeURIComponent(id)}/review`, json("POST", { status, confirm_review: true }));

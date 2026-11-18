@@ -96,6 +96,7 @@
       if (route[0] === "episode" && route[1]) return await renderEpisodeEditor(route[1], requestId);
       if (route[0] === "scripts" && route[1]) return await renderScripts(route[1], requestId);
       if (route[0] === "generation" && route[1]) return await renderGeneration(route[1], requestId);
+      if (route[0] === "transistor" && route[1]) return await renderTransistor(route[1], requestId);
       if (route[0] === "voices") return await renderVoices(requestId);
       return await renderDashboard(requestId);
     } catch (error) {
@@ -450,7 +451,7 @@
        <button class="button primary" data-action="prepare-handoff" data-script-ready="${approved}" data-episode-language="${h(episode.language)}" ${approved && voice && voice.availability === "available" && voice.language === episode.language ? "" : "disabled"}>${h(labels.prepare)}</button><p class="field-help">${h(labels.generationHelp)}</p><div class="generation-error" id="generation-error" role="alert" aria-live="assertive"></div>
       </section><section class="panel handoff-panel"><h2>${h(labels.handoffs)}</h2>${handoffRows}</section></div>
       <section class="panel generation-history"><h2>${h(labels.history)}</h2><p class="muted">${english ? "Every import receives a new directory. Existing and approved audio files are never replaced." : "Cada importação recebe uma nova pasta. Áudios existentes e aprovados nunca são substituídos."}</p>${history}</section>
-      <a class="button secondary" href="#scripts/${encodeURIComponent(episode.id)}">${english ? "Back to script review" : "Voltar à revisão do script"}</a>
+      <div class="heading-actions"><a class="button secondary" href="#scripts/${encodeURIComponent(episode.id)}">${english ? "Back to script review" : "Voltar à revisão do script"}</a><a class="button" href="#transistor/${encodeURIComponent(episode.id)}">${english ? "Transistor publishing →" : "Publicação no Transistor →"}</a></div>
       <dialog id="handoff-confirm-dialog" class="approval-dialog" aria-labelledby="handoff-confirm-title"><form method="dialog"><p class="eyebrow">${english ? "EXPLICIT ACTION · STILL NO GENERATION" : "AÇÃO EXPLÍCITA · AINDA SEM GERAÇÃO"}</p><h2 id="handoff-confirm-title">${h(labels.confirmHandoff)}</h2><p>${h(episode.title)} · ${h(voice ? voice.display_name : labels.voiceNone)} · Fish Audio Drama 3 / drama-3</p><p>${h(labels.confirm)}</p><p>${h(labels.handoffConfirmCopy)}</p><div class="dialog-actions"><button class="button secondary" value="cancel">${h(labels.cancelHandoff)}</button><button class="button primary" value="confirm" data-action="confirm-handoff">${h(labels.yesHandoff)}</button></div></form></dialog>
       <dialog id="audio-review-dialog" class="approval-dialog" aria-labelledby="audio-review-title"><form method="dialog"><p class="eyebrow">${english ? "EXPLICIT AUDIO REVIEW · NO PUBLISHING" : "REVISÃO EXPLÍCITA · SEM PUBLICAÇÃO"}</p><h2 id="audio-review-title">${h(labels.review)}</h2><p id="audio-review-prompt"></p><p>${h(labels.preserve)}</p><div class="dialog-actions"><button class="button secondary" value="cancel" data-action="cancel-audio-review">${h(labels.cancelReview)}</button><button class="button primary" value="confirm" data-action="confirm-audio-review">${h(labels.confirmReview)}</button></div></form></dialog>`;
     view.querySelectorAll("audio[data-audio-duration]").forEach((player) => {
@@ -462,6 +463,61 @@
       player.addEventListener("error", () => { output.textContent = `${labels.duration} · ${labels.durationUnknown}`; }, { once: true });
       if (Number.isFinite(player.duration) && player.duration > 0) output.textContent = `${labels.duration} · ${formatAudioDuration(player.duration)}`;
     });
+  }
+
+  async function renderTransistor(id, requestId) {
+    const english = document.documentElement.lang === "en";
+    setNav("episodes", english ? "Episodes / Transistor" : "Episódios / Transistor");
+    const [episode, filesResult, publicationResult] = await Promise.all([
+      api.episode(id), api.episodeFiles(id), api.transistorPublication(id),
+    ]);
+    if (requestId !== pageRequest) return;
+    let shows = [];
+    let configurationError = "";
+    try { shows = (await api.transistorShows()).shows || []; }
+    catch (error) { configurationError = error.message; }
+    if (requestId !== pageRequest) return;
+    const publication = publicationResult.publication;
+    const approvedFiles = (filesResult.files || []).filter((file) => file.approval_status === "approved");
+    const labels = english ? {
+      title: "Transistor publishing", intro: "Server-side API integration · upload and publishing are separate, explicit actions.",
+      safety: "No automatic upload or publishing.", safetyCopy: "The selected approved audio is sent to Transistor only after confirmation. A draft is created first; publishing or scheduling needs another confirmation.",
+      setup: "Prepare a Transistor draft", show: "Podcast show", audio: "Approved local audio", summary: "Short summary", keywords: "Keywords (comma-separated)",
+      upload: "Upload audio and create draft", uploadConfirm: "Upload this approved audio and create a draft on Transistor? This sends the audio and metadata to the selected show; it will not publish.",
+      status: "Transistor status", refresh: "Refresh status", publishNow: "Publish now…", schedule: "Schedule…", date: "Show-local publication date and time", publishConfirm: "Publish this Transistor draft now? This is a separate external publishing action.", scheduleConfirm: "Schedule this Transistor episode at the selected show's local time? This is a separate external action.",
+      noAudio: "No locally approved audio is available. Approve an audio version first.", noShows: "No Transistor shows were returned for this API key.", noConfig: "Transistor is not configured or could not be reached. Configure TRANSISTOR_API_KEY in the local server environment; it is never sent to the browser.", zoneMissing: "Transistor has no time zone recognized by this server. Publishing now remains available; scheduling needs a supported, confirmed show time zone.",
+      created: "Draft created on Transistor. It has not been published.", uploading: "Audio is being uploaded and a draft is being created…", published: "Published", scheduled: "Scheduled", draft: "Draft", upload_failed: "Upload failed before draft creation. The same approved file/show can be retried.", creation_uncertain: "Draft creation could not be confirmed. Inspect Transistor manually before doing anything; retry is disabled to prevent duplicates.", publish_uncertain: "The publication request may have been accepted. Refresh status before considering another action.",
+      remote: "Remote Transistor episode", showName: "Show", timeZone: "Publishing time zone", back: "Back to audio review", error: "Transistor action failed",
+    } : {
+      title: "Publicação no Transistor", intro: "Integração de API no servidor · upload e publicação são ações explícitas separadas.",
+      safety: "Sem upload ou publicação automáticos.", safetyCopy: "O áudio aprovado só será enviado ao Transistor após confirmação. Primeiro é criado um rascunho; publicar ou agendar exige outra confirmação.",
+      setup: "Preparar rascunho no Transistor", show: "Podcast", audio: "Áudio local aprovado", summary: "Resumo curto", keywords: "Palavras-chave (separadas por vírgula)",
+      upload: "Enviar áudio e criar rascunho", uploadConfirm: "Enviar este áudio aprovado e criar um rascunho no Transistor? O áudio e os metadados serão enviados ao podcast; nada será publicado.",
+      status: "Status no Transistor", refresh: "Atualizar status", publishNow: "Publicar agora…", schedule: "Agendar…", date: "Data e hora de publicação no fuso do podcast", publishConfirm: "Publicar este rascunho do Transistor agora? Esta é uma ação externa separada.", scheduleConfirm: "Agendar este episódio no horário local do podcast selecionado? Esta é uma ação externa separada.",
+      noAudio: "Não há áudio local aprovado. Aprove uma versão de áudio primeiro.", noShows: "Nenhum podcast Transistor foi retornado para esta chave de API.", noConfig: "Transistor não está configurado ou não respondeu. Configure TRANSISTOR_API_KEY no ambiente local do servidor; ela nunca é enviada ao navegador.", zoneMissing: "O servidor não reconhece o fuso retornado pelo Transistor. Publicar agora continua disponível; o agendamento exige um fuso do podcast reconhecido e confirmado.",
+      created: "Rascunho criado no Transistor. Ainda não foi publicado.", uploading: "Enviando áudio e criando rascunho…", published: "Publicado", scheduled: "Agendado", draft: "Rascunho", upload_failed: "Falha no upload antes da criação do rascunho. É possível tentar novamente com o mesmo áudio aprovado/podcast.", creation_uncertain: "Não foi possível confirmar a criação do rascunho. Inspecione o Transistor manualmente antes de qualquer ação; a repetição está desativada para evitar duplicatas.", publish_uncertain: "A solicitação de publicação pode ter sido aceita. Atualize o status antes de qualquer outra ação.",
+      remote: "Episódio remoto no Transistor", showName: "Podcast", timeZone: "Fuso de publicação", back: "Voltar à revisão de áudio", error: "Ação Transistor falhou",
+    };
+    const showOptions = shows.map((show) => `<option value="${h(show.id)}">${h(show.title || show.id)} · ${h(show.time_zone || "timezone unavailable")}</option>`).join("");
+    const statusLabels = { draft: labels.draft, scheduled: labels.scheduled, published: labels.published,
+      upload_failed: labels.upload_failed, creation_uncertain: labels.creation_uncertain, publish_uncertain: labels.publish_uncertain,
+      uploading: labels.uploading, publishing: english ? "Publication request in progress · refresh status" : "Solicitação em andamento · atualizar status" };
+    let content;
+    if (publication) {
+      const safeStatus = statusLabels[publication.status] || h(publication.status);
+      const showLine = `${h(publication.show_title || publication.show_id)} · ${h(publication.show_time_zone || "")}`;
+      const publishControls = publication.status === "draft" ? `<section class="panel"><h2>${h(english ? "Publish or schedule" : "Publicar ou agendar")}</h2><p>${h(english ? "Publishing is irreversible. Review the title, approved audio and target show before confirming." : "A publicação é uma ação externa. Confira o título, o áudio aprovado e o podcast antes de confirmar.")}</p><label for="transistor-published-at">${h(labels.date)}</label><input id="transistor-published-at" type="datetime-local"><div class="heading-actions"><button class="button primary" data-action="publish-transistor" data-status="published">${h(labels.publishNow)}</button><button class="button" data-action="publish-transistor" data-status="scheduled" ${publication.show_time_zone_supported ? "" : "disabled"}>${h(labels.schedule)}</button></div>${publication.show_time_zone_supported ? "" : `<p class="field-help">${h(labels.zoneMissing)}</p>`}</section>` : "";
+      content = `<section class="panel"><h2>${h(labels.status)} · ${h(safeStatus)}</h2><p>${h(labels.showName)} · ${showLine}</p><p>${h(labels.remote)} · ${h(publication.remote_episode_id || "—")}</p>${publication.published_at ? `<p>${h(english ? "Published at" : "Data de publicação")}: ${h(publication.published_at)}</p>` : ""}<button class="button secondary" data-action="refresh-transistor">${h(labels.refresh)}</button><p class="muted">${publication.status === "draft" ? h(labels.created) : h(safeStatus)}</p></section>${publishControls}`;
+    } else {
+      const formDisabled = !shows.length || !approvedFiles.length || !!configurationError;
+      content = `<section class="panel"><h2>${h(labels.setup)}</h2>${configurationError ? `<p class="danger-note" role="alert">${h(configurationError || labels.noConfig)}</p>` : ""}${!configurationError && !shows.length ? `<p class="muted">${h(labels.noShows)}</p>` : ""}<p>${h(labels.safetyCopy)}</p><div class="form-grid"><div class="form-field full"><label for="transistor-show">${h(labels.show)}</label><select id="transistor-show" ${formDisabled ? "disabled" : ""}>${showOptions || `<option value="">${h(labels.noShows)}</option>`}</select></div><div class="form-field full"><label for="transistor-file">${h(labels.audio)}</label><select id="transistor-file" ${formDisabled ? "disabled" : ""}>${approvedFiles.map((file) => `<option value="${h(file.id)}">${h(file.filename)} · ${Number(file.size_bytes).toLocaleString()} bytes · ${h(dateLabel(file.created_at))}</option>`).join("")}</select>${!approvedFiles.length ? `<p class="field-help">${h(labels.noAudio)}</p>` : ""}</div><div class="form-field full"><label for="transistor-summary">${h(labels.summary)}</label><textarea id="transistor-summary" rows="2" maxlength="10000">${h(episode.description || "")}</textarea></div><div class="form-field full"><label for="transistor-keywords">${h(labels.keywords)}</label><input id="transistor-keywords" maxlength="2000"></div></div><div id="transistor-error" class="danger-note" role="alert"></div><button class="button primary" data-action="create-transistor-draft" ${formDisabled ? "disabled" : ""}>${h(labels.upload)}</button><p class="muted">${h(labels.intro)}</p></section>`;
+    }
+    view.innerHTML = `${heading(labels.title, `${episode.title} · ${labels.intro}`)}<section class="editorial-safety"><strong>✓ ${h(labels.safety)}</strong><p>${h(labels.safetyCopy)}</p></section>${content}<a class="button secondary" href="#generation/${encodeURIComponent(id)}">← ${h(labels.back)}</a>`;
+    view.dataset.transistorEpisode = id;
+    view.dataset.transistorConfirmUpload = labels.uploadConfirm;
+    view.dataset.transistorPublishConfirm = labels.publishConfirm;
+    view.dataset.transistorScheduleConfirm = labels.scheduleConfirm;
+    view.dataset.transistorUploading = labels.uploading;
   }
 
   async function renderVoices(requestId) {
@@ -699,6 +755,61 @@
         showNotice(document.documentElement.lang === "en" ? "Registered voice selection saved locally." : "Seleção de voz registrada salva localmente.");
       } catch (_error) {
         showNotice(document.documentElement.lang === "en" ? "Could not save this voice selection. No audio was generated." : "Não foi possível salvar esta seleção de voz. Nenhum áudio foi gerado.", "error");
+        button.disabled = false;
+      }
+    }
+    if (action === "create-transistor-draft") {
+      if (button.disabled || !window.confirm(view.dataset.transistorConfirmUpload)) return;
+      const route = currentRoute.slice(1).split("/");
+      const errorBox = document.getElementById("transistor-error");
+      button.disabled = true;
+      button.textContent = view.dataset.transistorUploading;
+      try {
+        const result = await api.createTransistorDraft(route[1], {
+          show_id: document.getElementById("transistor-show").value,
+          file_id: document.getElementById("transistor-file").value,
+          summary: document.getElementById("transistor-summary").value,
+          keywords: document.getElementById("transistor-keywords").value,
+        }, true);
+        await loadRoute();
+        showNotice(document.documentElement.lang === "en" ? "Transistor draft created. It has not been published." : "Rascunho criado no Transistor. Ainda não foi publicado.");
+      } catch (error) {
+        if (errorBox) errorBox.textContent = error.message;
+        button.disabled = false;
+        button.textContent = document.documentElement.lang === "en" ? "Upload audio and create draft" : "Enviar áudio e criar rascunho";
+      }
+    }
+    if (action === "refresh-transistor") {
+      button.disabled = true;
+      try {
+        const route = currentRoute.slice(1).split("/");
+        await api.refreshTransistorPublication(route[1]);
+        await loadRoute();
+        showNotice(document.documentElement.lang === "en" ? "Transistor status refreshed." : "Status do Transistor atualizado.");
+      } catch (error) {
+        showNotice(error.message, "error");
+        button.disabled = false;
+      }
+    }
+    if (action === "publish-transistor") {
+      const status = button.dataset.status;
+      const time = document.getElementById("transistor-published-at");
+      const publishedAt = status === "scheduled" && time ? time.value : "";
+      if (status === "scheduled" && !publishedAt) {
+        time.focus();
+        time.reportValidity();
+        return;
+      }
+      const prompt = status === "scheduled" ? view.dataset.transistorScheduleConfirm : view.dataset.transistorPublishConfirm;
+      if (button.disabled || !window.confirm(prompt)) return;
+      const route = currentRoute.slice(1).split("/");
+      button.disabled = true;
+      try {
+        await api.publishTransistorEpisode(route[1], status, publishedAt, true);
+        await loadRoute();
+        showNotice(status === "scheduled" ? (document.documentElement.lang === "en" ? "Transistor episode scheduled." : "Episódio agendado no Transistor.") : (document.documentElement.lang === "en" ? "Episode published on Transistor." : "Episódio publicado no Transistor."));
+      } catch (error) {
+        showNotice(error.message, "error");
         button.disabled = false;
       }
     }

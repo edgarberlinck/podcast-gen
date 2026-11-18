@@ -110,6 +110,28 @@ test("audio review is explicitly confirmed and failure categories are reported l
   assert.deepEqual(JSON.parse(calls[1].options.body), { confirm_failure: true, failure_code: "mcp_error" });
 });
 
+test("Transistor upload and publish actions require separate confirmation", async () => {
+  const calls = [];
+  const api = createApi(async (path, options) => {
+    calls.push({ path, options });
+    return response({ publication: { status: "draft" }, shows: [] });
+  });
+  assert.throws(() => api.createTransistorDraft("ep-1", { show_id: "show-1" }, false), /explicit/i);
+  assert.throws(() => api.publishTransistorEpisode("ep-1", "published", "", false), /separate explicit/i);
+  await api.transistorShows();
+  await api.transistorPublication("ep-1");
+  await api.createTransistorDraft("ep-1", { show_id: "show-1", file_id: "file-1" }, true);
+  await api.refreshTransistorPublication("ep-1");
+  await api.publishTransistorEpisode("ep-1", "scheduled", "2026-12-01T10:00", true);
+  assert.deepEqual(calls.map(({ path }) => path), [
+    "/api/transistor/shows", "/api/episodes/ep-1/transistor",
+    "/api/episodes/ep-1/transistor/draft", "/api/episodes/ep-1/transistor/refresh",
+    "/api/episodes/ep-1/transistor/publish",
+  ]);
+  assert.deepEqual(JSON.parse(calls[2].options.body), { show_id: "show-1", file_id: "file-1", confirm_upload: true });
+  assert.deepEqual(JSON.parse(calls[4].options.body), { status: "scheduled", published_at: "2026-12-01T10:00", confirm_publish: true });
+});
+
 test("unknown derived content kinds cannot select a route", () => {
   const api = createApi(async () => response({}));
   assert.throws(() => api.saveScript("episode-1", "original", "unsafe"), /desconhecido/i);
