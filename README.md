@@ -303,6 +303,21 @@ Ticket #60 results (2026-11-18): `npm ci` passed with 0 reported vulnerabilities
 
 PR #13 review follow-up: the upload confirmation captures the selected podcast's ID and displays its title; the draft request uses that same ID. Retries stay locked to the original podcast and are disabled if it is no longer returned. The mocked jsdom and browser regressions select a second podcast before opening confirmation and verify that the displayed destination matches the draft request. Recheck: `npm ci`; `npm test` (24 passed); `node --experimental-test-coverage --test tests/*.test.js` (24 passed; `static/app.js` 36.67%, `static/api.js` 100% line coverage); `npx playwright install chromium` and `npm run test:e2e` (16 passed); `python -m pytest --cov=. --cov-report=term` (140 passed, 94% combined coverage); `python -m ruff check .`, `node --check static/app.js`, and `git diff --check` passed. No live Transistor calls were made.
 
+Ticket #61 browser E2E additions (2026-11-18) extend `tests/e2e/transistor-publishing.spec.js` to four deterministic Chromium scenarios. The suite verifies the mocked show/episode metadata mapping (including edited title/description, summary, keywords and selected show), excludes pending audio and blocks upload when there is no approved recording, checks upload-only confirmation/progress and no publication before a separate confirmation, and covers a valid future schedule in the returned podcast timezone. It also checks schedule confirmation/status remains “scheduled, not published” and that an uncertain publish failure is not automatically repeated; an explicit status refresh reconciles the remote result. All browser `/api/**` calls in this spec are intercepted with local Playwright fixtures; no Transistor endpoint, credential, upload URL, or account is contacted. Existing `tests/test_transistor.py` backend tests continue to validate mocked adapter operations and scheduling rejection (past, invalid, DST gap/ambiguity, unsupported timezone).
+
+Exact local checks and results for ticket #61 (repository root):
+
+```sh
+npm ci
+npm test
+node --check tests/e2e/transistor-publishing.spec.js
+npm run test:e2e
+python -m pytest --cov=. --cov-report=term
+python -m ruff check .
+```
+
+Results: `npm ci` installed 31 packages with 0 reported vulnerabilities; `npm test` passed 24 Node tests; syntax check passed; Playwright Chromium passed 19 tests total (including all four Transistor scenarios); Python passed 140 tests at 94% total coverage (`app.py` 88%, `transistor.py` 83%, `narration.py` 92%); Ruff passed. This is mocked local evidence only. No Transistor credentials/account were configured and no live show lookup, audio upload, draft creation, publication, scheduling, or downstream directory/RSS verification was attempted; live account verification remains unavailable and unclaimed.
+
 ## Phase 5 Transistor integration (ticket #59)
 
 The local **Transistor publishing** screen is available from the audio review page at `#transistor/<episode-id>`. It uses only operations and fields documented in the [official Transistor API reference](https://developers.transistor.fm/) and the project's Phase 1 Integration Capability Report: server-side `x-api-key` auth, `GET /v1/shows`, `GET /v1/shows/:id`, `GET /v1/episodes/:id`, `GET /v1/episodes/authorize_upload`, raw `PUT` to the authorized upload URL, `POST /v1/episodes` (creates a draft), and the separate `PATCH /v1/episodes/:id/publish` operation.

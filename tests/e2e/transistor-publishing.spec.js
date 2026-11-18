@@ -32,6 +32,8 @@ test.afterAll(() => {
 
 test("Transistor screen is responsive and each remote operation is separately user-confirmed", async ({ page }) => {
   const calls = [];
+  const metadataUpdates = [];
+  let draftPayload = null;
   let publication = null;
   const episode = { id: "episode-1", title: "Local episode", description: "Episode summary", language: "en" };
   const files = [
@@ -45,7 +47,9 @@ test("Transistor screen is responsive and each remote operation is separately us
     calls.push(key);
     if (url.pathname === "/api/episodes/episode-1" && request.method() === "GET") return route.fulfill({ json: episode });
     if (url.pathname === "/api/episodes/episode-1" && request.method() === "PATCH") {
-      Object.assign(episode, request.postDataJSON());
+      const patch = request.postDataJSON();
+      metadataUpdates.push(patch);
+      Object.assign(episode, patch);
       return route.fulfill({ json: episode });
     }
     if (url.pathname === "/api/episodes/episode-1/files") return route.fulfill({ json: { files } });
@@ -57,6 +61,7 @@ test("Transistor screen is responsive and each remote operation is separately us
     if (url.pathname.endsWith("/transistor/draft")) {
       await new Promise((resolve) => setTimeout(resolve, 200));
       const body = request.postDataJSON();
+      draftPayload = body;
       publication = { episode_id: "episode-1", file_id: body.file_id, show_id: body.show_id, remote_episode_id: "remote-1", status: "draft", show_title: "Second podcast & guests", title: episode.title, description: episode.description, summary: body.summary, keywords: body.keywords, show_time_zone: "America/Sao_Paulo", show_time_zone_supported: true };
       return route.fulfill({ json: { publication }, status: 201 });
     }
@@ -81,6 +86,13 @@ test("Transistor screen is responsive and each remote operation is separately us
 
   await page.locator("#transistor-language").selectOption("en");
   await expect(page.getByRole("heading", { name: "Your draft is ready. Publishing is not." })).toBeVisible();
+  await page.locator("#transistor-title").fill("Reviewed episode title");
+  await page.locator("#transistor-description").fill("Reviewed episode description");
+  await page.getByRole("button", { name: "Save metadata locally" }).click();
+  await expect(page.getByText("Metadata saved locally.")).toBeVisible();
+  expect(metadataUpdates).toContainEqual({ title: "Reviewed episode title", description: "Reviewed episode description" });
+  await page.locator("#transistor-summary").fill("Short public summary");
+  await page.locator("#transistor-keywords").fill("code, safety, podcast");
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.locator("#transistor-show").selectOption("show-2");
@@ -96,9 +108,11 @@ test("Transistor screen is responsive and each remote operation is separately us
     page.waitForRequest((request) => request.url().endsWith("/transistor/draft")),
     page.getByRole("button", { name: "Yes, upload audio" }).click(),
   ]);
-  expect(uploadRequest.postDataJSON()).toMatchObject({ show_id: "show-2", confirm_upload: true });
+  expect(uploadRequest.postDataJSON()).toEqual({ show_id: "show-2", file_id: "file-approved", summary: "Short public summary", keywords: "code, safety, podcast", confirm_upload: true });
   await expect(page.locator("#transistor-upload-progress")).toContainText("Uploading the approved file");
   await expect(page.getByRole("heading", { name: /Draft · not published/ })).toBeVisible();
+  expect(draftPayload).toEqual({ show_id: "show-2", file_id: "file-approved", summary: "Short public summary", keywords: "code, safety, podcast", confirm_upload: true });
+  expect(publication).toMatchObject({ title: "Reviewed episode title", description: "Reviewed episode description", summary: "Short public summary", keywords: "code, safety, podcast", show_title: "Second podcast & guests" });
   await expect(page.getByRole("button", { name: /Review publication confirmation/ })).toBeDisabled();
   expect(calls.some((call) => call.endsWith("/transistor/publish"))).toBe(false);
 
@@ -111,5 +125,133 @@ test("Transistor screen is responsive and each remote operation is separately us
   await expect(page.getByRole("heading", { name: "Published on Transistor" })).toBeVisible();
   expect(calls.filter((call) => call.endsWith("/transistor/draft")).length).toBe(1);
   expect(calls.filter((call) => call.endsWith("/transistor/refresh")).length).toBe(1);
+  expect(calls.filter((call) => call.endsWith("/transistor/publish")).length).toBe(1);
+});
+
+test("episodes without approved audio cannot start an upload", async ({ page }) => {
+  const calls = [];
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    calls.push(`${request.method()} ${url.pathname}`);
+    if (url.pathname === "/api/episodes/episode-1") return route.fulfill({ json: { id: "episode-1", title: "Not approved", description: "Pending", language: "en" } });
+    if (url.pathname === "/api/episodes/episode-1/files") return route.fulfill({ json: { files: [
+      { id: "pending-audio", filename: "pending.mp3", size_bytes: 2048, created_at: "2026-11-18T00:32:00Z", approval_status: "pending" },
+    ] } });
+    if (url.pathname === "/api/episodes/episode-1/transistor") return route.fulfill({ json: { publication: null } });
+    if (url.pathname === "/api/transistor/shows") return route.fulfill({ json: { shows: [{ id: "show-1", title: "Código & Cicatriz", time_zone: "America/Sao_Paulo" }] } });
+    if (url.pathname.startsWith("/api/files/")) return route.fulfill({ body: Buffer.from("mock audio"), contentType: "audio/mpeg" });
+    return route.fulfill({ json: { error: { code: "unexpected", message: "Unexpected mocked route" } }, status: 500 });
+  });
+
+  await page.goto(`${origin}/#transistor/episode-1`);
+  await page.locator("#transistor-language").selectOption("en");
+  await expect(page.locator(".transistor-audio").getByText("No locally approved audio is available. Approve an audio version first.")).toBeVisible();
+  await expect(page.locator("#transistor-file option")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Review upload confirmation" })).toBeDisabled();
+  expect(calls.some((call) => /transistor\/(draft|publish)$/.test(call))).toBe(false);
+});
+
+test("a confirmed future schedule is a separate action and remains scheduled, not published", async ({ page }) => {
+  const calls = [];
+  let publication = null;
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    calls.push(`${request.method()} ${url.pathname}`);
+    if (url.pathname === "/api/episodes/episode-1") return route.fulfill({ json: { id: "episode-1", title: "Schedule episode", description: "Schedule summary", language: "en" } });
+    if (url.pathname === "/api/episodes/episode-1/files") return route.fulfill({ json: { files: [
+      { id: "approved-audio", filename: "approved.mp3", size_bytes: 4096, created_at: "2026-11-18T00:31:00Z", approval_status: "approved" },
+    ] } });
+    if (url.pathname === "/api/episodes/episode-1/transistor" && request.method() === "GET") return route.fulfill({ json: { publication } });
+    if (url.pathname === "/api/transistor/shows") return route.fulfill({ json: { shows: [{ id: "show-1", title: "Código & Cicatriz", time_zone: "America/Sao_Paulo" }] } });
+    if (url.pathname.endsWith("/transistor/draft")) {
+      publication = { episode_id: "episode-1", file_id: "approved-audio", show_id: "show-1", remote_episode_id: "remote-scheduled", status: "draft", show_title: "Código & Cicatriz", title: "Schedule episode", description: "Schedule summary", summary: "Summary", keywords: "code", show_time_zone: "America/Sao_Paulo", show_time_zone_supported: true };
+      return route.fulfill({ json: { publication }, status: 201 });
+    }
+    if (url.pathname.endsWith("/transistor/refresh")) return route.fulfill({ json: { publication } });
+    if (url.pathname.endsWith("/transistor/publish")) {
+      const body = request.postDataJSON();
+      publication = { ...publication, status: body.status, published_at: body.published_at };
+      return route.fulfill({ json: { publication } });
+    }
+    if (url.pathname.startsWith("/api/files/")) return route.fulfill({ status: 200, contentType: "audio/mpeg", body: Buffer.from("mock audio") });
+    return route.fulfill({ json: { error: { code: "unexpected", message: "Unexpected mocked route" } }, status: 500 });
+  });
+
+  await page.goto(`${origin}/#transistor/episode-1`);
+  await page.locator("#transistor-language").selectOption("en");
+  await page.getByRole("button", { name: "Review upload confirmation" }).click();
+  await page.getByLabel(/I confirm sending this approved audio/).check();
+  await page.getByRole("button", { name: "Yes, upload audio" }).click();
+  await expect(page.getByRole("heading", { name: /Draft · not published/ })).toBeVisible();
+  expect(calls.some((call) => call.endsWith("/transistor/publish"))).toBe(false);
+
+  await page.getByRole("button", { name: /Refresh status/ }).click();
+  await page.locator('input[name="transistor-action"][value="scheduled"]').check();
+  const scheduledAt = "2027-01-15T12:30";
+  await page.locator("#transistor-published-at").fill(scheduledAt);
+  await page.getByRole("button", { name: "Review schedule confirmation" }).click();
+  await expect(page.getByRole("dialog", { name: "Confirm episode schedule" })).toBeVisible();
+  await expect(page.locator("#transistor-publish-recap")).toContainText("America/Sao_Paulo");
+  await expect(page.getByRole("button", { name: "Confirm schedule" })).toBeDisabled();
+  expect(calls.some((call) => call.endsWith("/transistor/publish"))).toBe(false);
+  await page.getByLabel(/I confirm this separate change/).check();
+  const [scheduleRequest] = await Promise.all([
+    page.waitForRequest((request) => request.url().endsWith("/transistor/publish")),
+    page.getByRole("button", { name: "Confirm schedule" }).click(),
+  ]);
+  expect(scheduleRequest.postDataJSON()).toEqual({ status: "scheduled", published_at: scheduledAt, confirm_publish: true });
+  await expect(page.getByRole("heading", { name: "Scheduled · not yet published" })).toBeVisible();
+  expect(calls.filter((call) => call.endsWith("/transistor/publish")).length).toBe(1);
+});
+
+test("uncertain publication is not retried automatically and status refresh reconciles it", async ({ page }) => {
+  const calls = [];
+  let publication = null;
+  let remoteStatus = "draft";
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    calls.push(`${request.method()} ${url.pathname}`);
+    if (url.pathname === "/api/episodes/episode-1") return route.fulfill({ json: { id: "episode-1", title: "Uncertain episode", description: "Summary", language: "en" } });
+    if (url.pathname === "/api/episodes/episode-1/files") return route.fulfill({ json: { files: [
+      { id: "approved-audio", filename: "approved.mp3", size_bytes: 4096, created_at: "2026-11-18T00:31:00Z", approval_status: "approved" },
+    ] } });
+    if (url.pathname === "/api/episodes/episode-1/transistor" && request.method() === "GET") return route.fulfill({ json: { publication } });
+    if (url.pathname === "/api/transistor/shows") return route.fulfill({ json: { shows: [{ id: "show-1", title: "Código & Cicatriz", time_zone: "America/Sao_Paulo" }] } });
+    if (url.pathname.endsWith("/transistor/draft")) {
+      publication = { episode_id: "episode-1", file_id: "approved-audio", show_id: "show-1", remote_episode_id: "remote-uncertain", status: "draft", show_title: "Código & Cicatriz", title: "Uncertain episode", description: "Summary", summary: "Summary", keywords: "", show_time_zone: "America/Sao_Paulo", show_time_zone_supported: true };
+      return route.fulfill({ json: { publication }, status: 201 });
+    }
+    if (url.pathname.endsWith("/transistor/refresh")) {
+      publication = { ...publication, status: remoteStatus };
+      return route.fulfill({ json: { publication } });
+    }
+    if (url.pathname.endsWith("/transistor/publish")) {
+      publication = { ...publication, status: "publish_uncertain" };
+      return route.fulfill({ status: 502, json: { error: { code: "transistor_publish_uncertain", message: "Transistor may have accepted the publication request. Refresh status before considering another action; this studio will not automatically retry." } } });
+    }
+    if (url.pathname.startsWith("/api/files/")) return route.fulfill({ status: 200, contentType: "audio/mpeg", body: Buffer.from("mock audio") });
+    return route.fulfill({ json: { error: { code: "unexpected", message: "Unexpected mocked route" } }, status: 500 });
+  });
+
+  await page.goto(`${origin}/#transistor/episode-1`);
+  await page.locator("#transistor-language").selectOption("en");
+  await page.getByRole("button", { name: "Review upload confirmation" }).click();
+  await page.getByLabel(/I confirm sending this approved audio/).check();
+  await page.getByRole("button", { name: "Yes, upload audio" }).click();
+  await page.getByRole("button", { name: /Refresh status/ }).click();
+  await page.getByRole("button", { name: "Review publication confirmation" }).click();
+  await page.getByLabel(/I confirm this separate change/).check();
+  await page.getByRole("button", { name: "Publish now" }).click();
+  await expect(page.getByText(/Publication action failed/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: /publication request may have been accepted/i })).toBeVisible();
+  expect(calls.filter((call) => call.endsWith("/transistor/publish")).length).toBe(1);
+
+  remoteStatus = "published";
+  await page.getByRole("button", { name: /Refresh status/ }).click();
+  await expect(page.getByRole("heading", { name: "Published on Transistor" })).toBeVisible();
+  expect(calls.filter((call) => call.endsWith("/transistor/refresh")).length).toBe(2);
   expect(calls.filter((call) => call.endsWith("/transistor/publish")).length).toBe(1);
 });
