@@ -619,11 +619,12 @@ class Studio:
         except TransistorError as exc:
             status = 503 if exc.code == "not_configured" else 502
             raise ApiError(status, "transistor_" + exc.code, exc.message) from None
-        if str(show.get("id")) != show_id or not isinstance(show.get("time_zone"), str) or not show["time_zone"].strip():
-            raise ApiError(502, "transistor_show_invalid", "Transistor did not return this show's publishing time zone.")
+        if str(show.get("id")) != show_id:
+            raise ApiError(502, "transistor_show_invalid", "Transistor returned a different show than the one selected.")
+        show_time_zone = show.get("time_zone") if isinstance(show.get("time_zone"), str) else ""
 
         stamp = now()
-        metadata = {"show_title": str(show.get("title", "")), "show_time_zone": show["time_zone"],
+        metadata = {"show_title": str(show.get("title", "")), "show_time_zone": show_time_zone,
                     "title": episode["title"], "summary": summary, "description": episode["description"], "keywords": keywords}
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -732,6 +733,16 @@ class Studio:
             if remote_status in {"scheduled", "published"}:
                 self._set_transistor_state(episode_id, remote_status, published_at=remote.get("published_at"))
             raise ApiError(409, "transistor_not_draft", "The Transistor episode is no longer a draft. Its current status was refreshed; no publication request was sent.")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current_file = db.execute("SELECT approval_status FROM files WHERE id=? AND episode_id=?",
+                                      (publication["file_id"], publication["episode_id"])).fetchone()
+            if current_file is None or current_file["approval_status"] != "approved":
+                raise ApiError(409, "audio_not_approved", "The selected local audio must remain explicitly approved before publication.")
+            claimed = db.execute("UPDATE transistor_publications SET status='publishing',updated_at=? WHERE episode_id=? AND status='draft'",
+                                 (now(), publication["episode_id"]))
+            if claimed.rowcount != 1:
+                raise ApiError(409, "transistor_publish_in_progress", "A publication request is already in progress or awaiting status reconciliation.")
         try:
             result = client.publish(publication["remote_episode_id"], status, published_at)
         except TransistorError:
@@ -783,6 +794,8 @@ class Studio:
     def delete_episode(self, episode_id):
         episode = self.get_episode(episode_id)
         with self.connect() as db:
+            if db.execute("SELECT 1 FROM transistor_publications WHERE episode_id=?", (episode["id"],)).fetchone():
+                raise ApiError(409, "transistor_episode_linked", "This episode has a Transistor record. Resolve the remote draft/publication before deleting its local tracking data.")
             db.execute("DELETE FROM episodes WHERE id=?", (episode["id"],))
         import shutil
         shutil.rmtree(self._episode_dir(episode["id"]), ignore_errors=True)
