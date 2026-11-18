@@ -233,6 +233,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await keyboardFocus(page, upload.locator(".button"));
       await upload.locator(".button").press("Enter");
       await modal(page, "#transistor-upload-dialog");
+      const consent = page.locator("#transistor-upload-dialog .transistor-consent");
+      await expect(consent).toHaveCSS("background-color", colors.dark);
+      await expect(consent).toHaveCSS("border-top-color", "rgb(98, 93, 93)");
+      await expect(consent.locator("span")).toHaveCSS("color", colors.white);
       await expect(page.locator('[data-action="confirm-transistor-upload"]')).toBeDisabled();
       await keyboardFocus(page, page.locator("#transistor-upload-consent"));
       await page.keyboard.press("Space");
@@ -262,27 +266,6 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         await page.keyboard.press("Escape");
       }
       expect(studio.calls.filter((call) => call.startsWith("POST"))).toEqual(["POST /api/episodes/refresh-episode/transistor/refresh"]);
-    });
-
-    test("known delivery gap: upload consent uses the approved dark surface and white copy", async ({ page, studio }, testInfo) => {
-      await page.goto(`${origin}/#transistor/refresh-episode`);
-      await page.locator("#transistor-language").selectOption("en");
-      await page.locator('[data-action="open-transistor-upload"]').click();
-      const consent = page.locator("#transistor-upload-dialog .transistor-consent");
-      await expect(consent).toBeVisible();
-      const actual = await consent.evaluate((node) => ({
-        background: getComputedStyle(node).backgroundColor,
-        copy: getComputedStyle(node.querySelector("span")).color,
-        insideUploadPanel: !!node.closest(".transistor-upload"),
-      }));
-      await testInfo.attach("rendered-consent.json", { body: JSON.stringify(actual, null, 2), contentType: "application/json" });
-      expect(studio.calls.every((call) => call.startsWith("GET"))).toBe(true);
-      // PR #16's rule requires .transistor-upload ancestry, but this delivered
-      // dialog is its sibling. Keep the desired check runnable without changing UI.
-      // Unexpected pass requires removing this annotation after the product fix.
-      test.fail(true, "Ticket #70: consent is outside .transistor-upload; approved nested dark rule does not match the delivered DOM.");
-      expect.soft(actual.background).toBe(colors.dark);
-      expect.soft(actual.copy).toBe(colors.white);
     });
   });
 }
