@@ -17,6 +17,7 @@
   let interfaceLanguage = null;
   let generationLanguage = null;
   let pendingAudioReview = null;
+  const confirmedTransistorDrafts = new Set();
 
   const h = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const langName = (code) => code === "en" ? "English" : "Português (Brasil)";
@@ -466,8 +467,11 @@
   }
 
   async function renderTransistor(id, requestId) {
-    const english = document.documentElement.lang === "en";
-    setNav("episodes", english ? "Episodes / Transistor" : "Episódios / Transistor");
+    const english = interfaceLanguage ? interfaceLanguage === "en" : document.documentElement.lang === "en";
+    interfaceLanguage = english ? "en" : "pt";
+    document.documentElement.lang = english ? "en" : "pt-BR";
+    setShellLanguage(interfaceLanguage);
+    setNav("episodes", english ? "Episodes / Publication" : "Episódios / Publicação");
     const [episode, filesResult, publicationResult] = await Promise.all([
       api.episode(id), api.episodeFiles(id), api.transistorPublication(id),
     ]);
@@ -480,46 +484,55 @@
     const publication = publicationResult.publication;
     const approvedFiles = (filesResult.files || []).filter((file) => file.approval_status === "approved");
     const labels = english ? {
-      title: "Transistor publishing", intro: "Server-side API integration · upload and publishing are separate, explicit actions.",
-      safety: "No automatic upload or publishing.", safetyCopy: "The selected approved audio is sent to Transistor only after confirmation. A draft is created first; publishing or scheduling needs another confirmation.",
-      setup: "Prepare a Transistor draft", show: "Podcast show", audio: "Approved local audio", summary: "Short summary", keywords: "Keywords (comma-separated)",
-      upload: "Upload audio and create draft", uploadConfirm: "Upload this approved audio and create a draft on Transistor? This sends the audio and metadata to the selected show; it will not publish.",
-      status: "Transistor status", refresh: "Refresh status", publishNow: "Publish now…", schedule: "Schedule…", date: "Show-local publication date and time", publishConfirm: "Publish this Transistor draft now? This is a separate external publishing action.", scheduleConfirm: "Schedule this Transistor episode at the selected show's local time? This is a separate external action.",
-      noAudio: "No locally approved audio is available. Approve an audio version first.", noShows: "No Transistor shows were returned for this API key.", noConfig: "Transistor is not configured or could not be reached. Configure TRANSISTOR_API_KEY in the local server environment; it is never sent to the browser.", zoneMissing: "Transistor has no time zone recognized by this server. Publishing now remains available; scheduling needs a supported, confirmed show time zone.",
-      created: "Draft created on Transistor. It has not been published.", uploading: "Audio is being uploaded and a draft is being created…", published: "Published", scheduled: "Scheduled", draft: "Draft", upload_failed: "Upload failed before draft creation. The same approved file/show can be retried.", creation_uncertain: "Draft creation could not be confirmed. Inspect Transistor manually before doing anything; retry is disabled to prevent duplicates.", publish_uncertain: "The publication request may have been accepted. Refresh status before considering another action.",
-      remote: "Remote Transistor episode", showName: "Show", timeZone: "Publishing time zone", back: "Back to audio review", error: "Transistor action failed",
+      title: "Your draft is ready. Publishing is not.", eyebrow: "PHASE 5 · TRANSISTOR · CONFIRM EACH EXTERNAL ACTION", safety: "No upload or publishing happens automatically.", safetyCopy: "Uploading sends a copy of the approved audio and metadata to Transistor. It only creates a draft. Publishing or scheduling requires a separate confirmation.",
+      steps: ["Podcast details", "Metadata and audio", "Upload and draft", "Publish or schedule"], show: "Podcast retrieved from Transistor", chooseShow: "Select a podcast", showHelp: "Choose the destination returned by your Transistor account.",
+      metadata: "Review episode metadata", titleLabel: "EPISODE TITLE", description: "DESCRIPTION", save: "Save metadata locally", saved: "Metadata saved locally.", audio: "APPROVED LOCAL RECORDING", audioLabel: "Approved audio", audioNote: "Local preview only. Nothing is transferred by playing this file.", noAudio: "No locally approved audio is available. Approve an audio version first.", selectAudio: "Select approved recording", summary: "Short summary", keywords: "Keywords (comma-separated)",
+      uploadHeading: "Before uploading audio", uploadCopy: "The approved file will be transferred to Transistor. This does not publish or schedule the episode.", uploadButton: "Review upload confirmation", confirmUpload: "I confirm sending this approved audio and metadata to Transistor. I understand this transfers a copy to an external service.", uploadYes: "Yes, upload audio", cancel: "Cancel · keep local", draftOnly: "This action uploads the file and creates a draft only.", uploading: "Uploading approved audio and creating a draft…", refreshing: "Checking Transistor status…", publishing: "Sending the confirmed publication request…",
+      status: "Transistor episode status", refresh: "Refresh status", noStatus: "Not sent to Transistor", details: "Remote episode", statusDraft: "Draft · not published", statusScheduled: "Scheduled · not yet published", statusPublished: "Published on Transistor", statusUploading: "Upload or request in progress", statusUploadFailed: "Upload failed before draft creation. The same file and show may be retried.", statusCreationUncertain: "Draft creation could not be confirmed. Inspect Transistor manually; retry is disabled to prevent duplicates.", statusPublishUncertain: "The publication request may have been accepted. Refresh status before taking another action.", created: "Draft saved. It has not been published.",
+      nextTitle: "The draft will not publish automatically", nextCopy: "After refreshing and confirming the remote draft status, choose publish now or schedule. This is a separate external action.", publishNow: "Publish now", schedule: "Schedule for later", date: "DATE & TIME · PODCAST TIME ZONE", zone: "Podcast time zone", zoneHint: "Confirm the local time displayed for the selected podcast. Scheduled does not mean published.", zoneMissing: "Scheduling is unavailable because Transistor did not return a supported podcast time zone. Publish now remains available.", publishConfirm: "I confirm this separate change to the Transistor episode status.", publishYes: "Confirm publication", scheduleYes: "Confirm schedule", publishAction: "Review publication confirmation", scheduleAction: "Review schedule confirmation", readFirst: "Refresh status and confirm the draft before publishing or scheduling.",
+      errorTitle: "Transistor could not complete that request.", safeError: "The saved local/remote state has not been assumed to change. Check status before trying again; no automatic retry is running.", configError: "Transistor could not be reached or is not configured. Configure TRANSISTOR_API_KEY in the local server environment; it is never sent to the browser.", noShows: "No podcast shows were returned for this account.", history: "Operation status", distribution: "A successful Transistor status does not mean podcast directories or RSS have updated immediately.", back: "Back to audio review", language: "Interface language",
     } : {
-      title: "Publicação no Transistor", intro: "Integração de API no servidor · upload e publicação são ações explícitas separadas.",
-      safety: "Sem upload ou publicação automáticos.", safetyCopy: "O áudio aprovado só será enviado ao Transistor após confirmação. Primeiro é criado um rascunho; publicar ou agendar exige outra confirmação.",
-      setup: "Preparar rascunho no Transistor", show: "Podcast", audio: "Áudio local aprovado", summary: "Resumo curto", keywords: "Palavras-chave (separadas por vírgula)",
-      upload: "Enviar áudio e criar rascunho", uploadConfirm: "Enviar este áudio aprovado e criar um rascunho no Transistor? O áudio e os metadados serão enviados ao podcast; nada será publicado.",
-      status: "Status no Transistor", refresh: "Atualizar status", publishNow: "Publicar agora…", schedule: "Agendar…", date: "Data e hora de publicação no fuso do podcast", publishConfirm: "Publicar este rascunho do Transistor agora? Esta é uma ação externa separada.", scheduleConfirm: "Agendar este episódio no horário local do podcast selecionado? Esta é uma ação externa separada.",
-      noAudio: "Não há áudio local aprovado. Aprove uma versão de áudio primeiro.", noShows: "Nenhum podcast Transistor foi retornado para esta chave de API.", noConfig: "Transistor não está configurado ou não respondeu. Configure TRANSISTOR_API_KEY no ambiente local do servidor; ela nunca é enviada ao navegador.", zoneMissing: "O servidor não reconhece o fuso retornado pelo Transistor. Publicar agora continua disponível; o agendamento exige um fuso do podcast reconhecido e confirmado.",
-      created: "Rascunho criado no Transistor. Ainda não foi publicado.", uploading: "Enviando áudio e criando rascunho…", published: "Publicado", scheduled: "Agendado", draft: "Rascunho", upload_failed: "Falha no upload antes da criação do rascunho. É possível tentar novamente com o mesmo áudio aprovado/podcast.", creation_uncertain: "Não foi possível confirmar a criação do rascunho. Inspecione o Transistor manualmente antes de qualquer ação; a repetição está desativada para evitar duplicatas.", publish_uncertain: "A solicitação de publicação pode ter sido aceita. Atualize o status antes de qualquer outra ação.",
-      remote: "Episódio remoto no Transistor", showName: "Podcast", timeZone: "Fuso de publicação", back: "Voltar à revisão de áudio", error: "Ação Transistor falhou",
+      title: "Seu rascunho está pronto. Publicar é outra etapa.", eyebrow: "FASE 5 · TRANSISTOR · CADA AÇÃO TEM SUA CONFIRMAÇÃO", safety: "Nenhum upload ou publicação acontece automaticamente.", safetyCopy: "O upload envia uma cópia do áudio aprovado e dos metadados ao Transistor. Ele cria somente um rascunho. Publicar ou agendar exige outra confirmação.",
+      steps: ["Podcast", "Metadados e áudio", "Upload e rascunho", "Publicar ou agendar"], show: "Podcast recuperado do Transistor", chooseShow: "Selecione um podcast", showHelp: "Escolha o destino retornado pela sua conta Transistor.",
+      metadata: "Revise os metadados do episódio", titleLabel: "TÍTULO DO EPISÓDIO", description: "DESCRIÇÃO", save: "Salvar metadados localmente", saved: "Metadados salvos localmente.", audio: "GRAVAÇÃO LOCAL APROVADA", audioLabel: "Áudio aprovado", audioNote: "Prévia local apenas. Reproduzir o arquivo não o transfere.", noAudio: "Não há áudio local aprovado. Aprove uma versão primeiro.", selectAudio: "Selecione a gravação aprovada", summary: "Resumo curto", keywords: "Palavras-chave (separadas por vírgula)",
+      uploadHeading: "Antes de enviar o áudio", uploadCopy: "O arquivo aprovado será transferido ao Transistor. Isso não publica nem agenda o episódio.", uploadButton: "Revisar confirmação de envio", confirmUpload: "Confirmo o envio deste áudio aprovado e dos metadados ao Transistor. Entendo que uma cópia será transferida para um serviço externo.", uploadYes: "Sim, enviar áudio", cancel: "Cancelar · manter local", draftOnly: "Esta ação envia o arquivo e cria somente um rascunho.", uploading: "Enviando o áudio aprovado e criando rascunho…", refreshing: "Consultando o status no Transistor…", publishing: "Enviando a solicitação de publicação confirmada…",
+      status: "Status do episódio no Transistor", refresh: "Atualizar status", noStatus: "Ainda não enviado ao Transistor", details: "Episódio remoto", statusDraft: "Rascunho · não publicado", statusScheduled: "Agendado · ainda não publicado", statusPublished: "Publicado no Transistor", statusUploading: "Upload ou solicitação em andamento", statusUploadFailed: "Falha antes da criação do rascunho. É possível tentar novamente com o mesmo arquivo e podcast.", statusCreationUncertain: "Não foi possível confirmar a criação do rascunho. Inspecione o Transistor manualmente; a repetição está desativada para evitar duplicatas.", statusPublishUncertain: "A solicitação pode ter sido aceita. Atualize o status antes de outra ação.", created: "Rascunho salvo. Ainda não foi publicado.",
+      nextTitle: "O rascunho não será publicado automaticamente", nextCopy: "Depois de atualizar e confirmar o status remoto do rascunho, escolha publicar ou agendar. É uma ação externa separada.", publishNow: "Publicar agora", schedule: "Agendar para depois", date: "DATA E HORA · FUSO DO PODCAST", zone: "Fuso do podcast", zoneHint: "Confirme o horário local exibido para o podcast selecionado. Agendado não significa publicado.", zoneMissing: "O agendamento não está disponível porque o Transistor não retornou um fuso reconhecido. Publicar agora continua disponível.", publishConfirm: "Confirmo esta alteração separada do status do episódio no Transistor.", publishYes: "Confirmar publicação", scheduleYes: "Confirmar agendamento", publishAction: "Revisar confirmação de publicação", scheduleAction: "Revisar confirmação de agendamento", readFirst: "Atualize o status e confirme o rascunho antes de publicar ou agendar.",
+      errorTitle: "O Transistor não concluiu esta solicitação.", safeError: "Não presuma que o estado local/remoto mudou. Confira o status antes de tentar novamente; não há repetição automática.", configError: "O Transistor não respondeu ou não está configurado. Configure TRANSISTOR_API_KEY no ambiente local do servidor; ela nunca é enviada ao navegador.", noShows: "Nenhum podcast foi retornado para esta conta.", history: "Status da operação", distribution: "Um status de sucesso no Transistor não significa que diretórios de podcast ou RSS já foram atualizados.", back: "Voltar à revisão de áudio", language: "Idioma da interface",
     };
-    const showOptions = shows.map((show) => `<option value="${h(show.id)}">${h(show.title || show.id)} · ${h(show.time_zone || "timezone unavailable")}</option>`).join("");
-    const statusLabels = { draft: labels.draft, scheduled: labels.scheduled, published: labels.published,
-      upload_failed: labels.upload_failed, creation_uncertain: labels.creation_uncertain, publish_uncertain: labels.publish_uncertain,
-      uploading: labels.uploading, publishing: english ? "Publication request in progress · refresh status" : "Solicitação em andamento · atualizar status" };
-    let content;
-    if (publication) {
-      const safeStatus = statusLabels[publication.status] || h(publication.status);
-      const showLine = `${h(publication.show_title || publication.show_id)} · ${h(publication.show_time_zone || "")}`;
-      const publishControls = publication.status === "draft" ? `<section class="panel"><h2>${h(english ? "Publish or schedule" : "Publicar ou agendar")}</h2><p>${h(english ? "Publishing is irreversible. Review the title, approved audio and target show before confirming." : "A publicação é uma ação externa. Confira o título, o áudio aprovado e o podcast antes de confirmar.")}</p><label for="transistor-published-at">${h(labels.date)}</label><input id="transistor-published-at" type="datetime-local"><div class="heading-actions"><button class="button primary" data-action="publish-transistor" data-status="published">${h(labels.publishNow)}</button><button class="button" data-action="publish-transistor" data-status="scheduled" ${publication.show_time_zone_supported ? "" : "disabled"}>${h(labels.schedule)}</button></div>${publication.show_time_zone_supported ? "" : `<p class="field-help">${h(labels.zoneMissing)}</p>`}</section>` : "";
-      content = `<section class="panel"><h2>${h(labels.status)} · ${h(safeStatus)}</h2><p>${h(labels.showName)} · ${showLine}</p><p>${h(labels.remote)} · ${h(publication.remote_episode_id || "—")}</p>${publication.published_at ? `<p>${h(english ? "Published at" : "Data de publicação")}: ${h(publication.published_at)}</p>` : ""}<button class="button secondary" data-action="refresh-transistor">${h(labels.refresh)}</button><p class="muted">${publication.status === "draft" ? h(labels.created) : h(safeStatus)}</p></section>${publishControls}`;
-    } else {
-      const formDisabled = !shows.length || !approvedFiles.length || !!configurationError;
-      content = `<section class="panel"><h2>${h(labels.setup)}</h2>${configurationError ? `<p class="danger-note" role="alert">${h(configurationError || labels.noConfig)}</p>` : ""}${!configurationError && !shows.length ? `<p class="muted">${h(labels.noShows)}</p>` : ""}<p>${h(labels.safetyCopy)}</p><div class="form-grid"><div class="form-field full"><label for="transistor-show">${h(labels.show)}</label><select id="transistor-show" ${formDisabled ? "disabled" : ""}>${showOptions || `<option value="">${h(labels.noShows)}</option>`}</select></div><div class="form-field full"><label for="transistor-file">${h(labels.audio)}</label><select id="transistor-file" ${formDisabled ? "disabled" : ""}>${approvedFiles.map((file) => `<option value="${h(file.id)}">${h(file.filename)} · ${Number(file.size_bytes).toLocaleString()} bytes · ${h(dateLabel(file.created_at))}</option>`).join("")}</select>${!approvedFiles.length ? `<p class="field-help">${h(labels.noAudio)}</p>` : ""}</div><div class="form-field full"><label for="transistor-summary">${h(labels.summary)}</label><textarea id="transistor-summary" rows="2" maxlength="10000">${h(episode.description || "")}</textarea></div><div class="form-field full"><label for="transistor-keywords">${h(labels.keywords)}</label><input id="transistor-keywords" maxlength="2000"></div></div><div id="transistor-error" class="danger-note" role="alert"></div><button class="button primary" data-action="create-transistor-draft" ${formDisabled ? "disabled" : ""}>${h(labels.upload)}</button><p class="muted">${h(labels.intro)}</p></section>`;
-    }
-    view.innerHTML = `${heading(labels.title, `${episode.title} · ${labels.intro}`)}<section class="editorial-safety"><strong>✓ ${h(labels.safety)}</strong><p>${h(labels.safetyCopy)}</p></section>${content}<a class="button secondary" href="#generation/${encodeURIComponent(id)}">← ${h(labels.back)}</a>`;
+    const showOptions = shows.map((show) => `<option value="${h(show.id)}">${h(show.title || show.id)}</option>`).join("");
+    const statusText = !publication ? labels.noStatus : ({ draft: labels.statusDraft, scheduled: labels.statusScheduled, published: labels.statusPublished, uploading: labels.statusUploading, publishing: labels.statusUploading, upload_failed: labels.statusUploadFailed, creation_uncertain: labels.statusCreationUncertain, publish_uncertain: labels.statusPublishUncertain }[publication.status] || labels.statusUploading);
+    const canSchedule = !!publication?.show_time_zone_supported;
+    const confirmedDraft = !!publication && publication.status === "draft" && confirmedTransistorDrafts.has(id);
+    let operationError = "";
+    const formDisabled = !!publication || !shows.length || !approvedFiles.length || !!configurationError;
+    const metadataLocked = !!publication;
+    const selectedFile = approvedFiles[0];
+    const fileOptions = approvedFiles.map((file) => `<option value="${h(file.id)}" data-filename="${h(file.filename)}" data-size="${(Number(file.size_bytes) / (1024 * 1024)).toFixed(1)} MB">${h(file.filename)} · ${(Number(file.size_bytes) / (1024 * 1024)).toFixed(1)} MB · ${h(dateLabel(file.created_at, english ? "en-US" : "pt-BR"))}</option>`).join("");
+    const showPanel = publication ? `<section class="transistor-show panel"><span class="eyebrow">${h(labels.show)}</span><h2>${h(publication.show_title || publication.show_id)}</h2><p>${h(labels.zone)} · ${h(publication.show_time_zone || (english ? "Unavailable" : "Indisponível"))}</p><span class="read-badge">✓ ${english ? "Details read" : "Informações lidas"}</span></section>` : `<section class="transistor-show panel"><label for="transistor-show">${h(labels.show)}</label><select id="transistor-show" ${formDisabled ? "disabled" : ""}>${showOptions || `<option value="">${h(labels.chooseShow)}</option>`}</select><p class="field-help">${h(labels.showHelp)}</p>${configurationError ? `<p class="transistor-error" role="alert">${h(labels.configError)}</p>` : !shows.length ? `<p class="muted">${h(labels.noShows)}</p>` : ""}</section>`;
+    const metadataPanel = `<section class="transistor-metadata panel"><header><span class="eyebrow">02 · ${h(labels.metadata)}</span><h2>${h(labels.metadata)}</h2></header><label for="transistor-title">${h(labels.titleLabel)}</label><input id="transistor-title" maxlength="300" value="${h(publication?.title || episode.title)}" ${metadataLocked ? "readonly" : ""}><label for="transistor-description">${h(labels.description)}</label><textarea id="transistor-description" rows="4" maxlength="10000" ${metadataLocked ? "readonly" : ""}>${h(publication?.description || episode.description || "")}</textarea><div class="transistor-audio"><span class="eyebrow">${h(labels.audio)}</span>${approvedFiles.length ? `<label for="transistor-file">${h(labels.selectAudio)}</label><select id="transistor-file" ${formDisabled ? "disabled" : ""}>${fileOptions}</select><audio controls preload="metadata" aria-label="${h(labels.audioLabel)} · ${h(selectedFile.filename)}" src="/api/files/${encodeURIComponent(selectedFile.id)}">${h(english ? "Audio playback is not supported." : "Reprodução de áudio não é suportada.")}</audio><p>${h(selectedFile.filename)} · ${h(labels.audioNote)}</p>` : `<p>${h(labels.noAudio)}</p>`}</div><div class="transistor-extra-metadata"><label for="transistor-summary">${h(labels.summary)}</label><textarea id="transistor-summary" rows="2" maxlength="10000" ${metadataLocked ? "readonly" : ""}>${h(publication?.summary || episode.description || "")}</textarea><label for="transistor-keywords">${h(labels.keywords)}</label><input id="transistor-keywords" maxlength="2000" value="${h(publication?.keywords || "")}" ${metadataLocked ? "readonly" : ""}></div>${publication ? "" : `<button class="button secondary" data-action="save-transistor-metadata" ${metadataLocked ? "disabled" : ""}>${h(labels.save)}</button><span class="save-state" id="transistor-save-state" aria-live="polite"></span>`}</section>`;
+    const uploadPanel = publication ? "" : `<section class="transistor-upload panel"><span class="eyebrow">03 · ${h(english ? "REMOTE TRANSFER" : "TRANSFERÊNCIA REMOTA")}</span><h2>${h(labels.uploadHeading)}</h2><p>${h(labels.uploadCopy)}</p><p class="upload-recap" id="upload-recap">${h(selectedFile ? `${selectedFile.filename} · ${(Number(selectedFile.size_bytes) / (1024 * 1024)).toFixed(1)} MB` : labels.noAudio)}<br>${h(episode.title)}<br>${h(shows[0]?.title || labels.chooseShow)} · Transistor</p><p id="transistor-error" class="transistor-error" role="alert" aria-live="assertive"></p><button class="button primary" data-action="open-transistor-upload" ${formDisabled ? "disabled" : ""}>${h(labels.uploadButton)}</button><p class="field-help">${h(labels.draftOnly)}</p></section>`;
+    const publicationPanel = publication ? `<section class="transistor-next panel"><span class="eyebrow">04 · ${h(english ? "SEPARATE EXTERNAL ACTION" : "AÇÃO EXTERNA SEPARADA")}</span><h2>${h(labels.nextTitle)}</h2><p>${h(labels.nextCopy)}</p><div class="transistor-publish-options"><label><input type="radio" name="transistor-action" value="published" checked> ${h(labels.publishNow)}</label><label class="schedule-option"><input type="radio" name="transistor-action" value="scheduled" ${canSchedule ? "" : "disabled"}> ${h(labels.schedule)}</label><div class="transistor-date-field"><label for="transistor-published-at">${h(labels.date)}</label><input id="transistor-published-at" type="datetime-local" ${canSchedule && confirmedDraft ? "" : "disabled"}></div></div><p class="timezone-note">${h(publication.show_time_zone ? `${labels.zone}: ${publication.show_time_zone}. ${labels.zoneHint}` : labels.zoneMissing)}</p><div class="transistor-actions"><button class="button primary" data-action="open-transistor-publish" ${confirmedDraft ? "" : "disabled"}>${h(labels.publishAction)}</button></div><p class="field-help">${h(confirmedDraft ? "" : labels.readFirst)}</p></section>` : "";
+    const currentStep = publication ? publication.status === "published" || publication.status === "scheduled" ? 3 : 2 : 1;
+    view.innerHTML = `<div class="transistor-locale"><label for="transistor-language">${h(labels.language)}</label><select id="transistor-language"><option value="pt" ${english ? "" : "selected"}>PT-BR</option><option value="en" ${english ? "selected" : ""}>EN</option></select></div>${heading(labels.title, `${episode.title} · ${english ? "Approved audio" : "Áudio aprovado"} · ${langShort(episode.language)}`)}<section class="editorial-safety transistor-safety"><strong>✓ ${h(labels.safety)}</strong><p>${h(labels.safetyCopy)}</p></section><nav class="transistor-steps" aria-label="${h(english ? "Publishing workflow" : "Fluxo de publicação")}">${labels.steps.map((step, index) => `<span ${index === currentStep ? 'aria-current="step"' : ""}>0${index + 1} ${index < currentStep ? "✓" : index === currentStep ? "●" : "○"} ${h(step)}</span>`).join("")}</nav><div class="transistor-grid">${showPanel}${metadataPanel}${uploadPanel}</div><section class="transistor-status panel" aria-live="polite"><div><span class="eyebrow">${h(labels.status)} · ${publication ? h(labels.details) : h(english ? "WAITING FOR YOUR CONFIRMATION" : "AGUARDANDO SUA CONFIRMAÇÃO")}</span><h2>${h(statusText)}</h2><p>${publication ? `${h(labels.details)} · ${h(publication.remote_episode_id || "—")}${publication.published_at ? ` · ${h(publication.published_at)}` : ""}` : h(english ? "No upload, publication or scheduling is in progress. This state is local." : "Nenhum upload, publicação ou agendamento está em andamento. O estado continua local.")}</p></div><div class="transistor-status-actions"><span class="transistor-status-chip ${h(publication?.status || "local")}">${h(statusText)}</span>${publication ? `<button class="button secondary" data-action="refresh-transistor">↻ ${h(labels.refresh)}</button>` : ""}</div></section><p id="transistor-operation-error" class="transistor-error" role="alert" aria-live="assertive"></p>${publication && publication.status === "draft" ? `<section class="transistor-draft-note editorial-safety"><strong>✓ ${h(labels.created)}</strong><p>${h(english ? "Publication remains blocked until you explicitly refresh and read back Draft from Transistor." : "A publicação permanece bloqueada até você atualizar e ler Rascunho do Transistor explicitamente.")}</p></section>` : ""}${publicationPanel}<p class="transistor-footer">${h(labels.distribution)}</p><a class="button secondary" href="#generation/${encodeURIComponent(id)}">← ${h(labels.back)}</a><dialog id="transistor-upload-dialog" class="approval-dialog" aria-labelledby="transistor-upload-title"><form method="dialog"><p class="eyebrow">${h(english ? "EXPLICIT CONFIRMATION · UPLOAD ONLY" : "CONFIRMAÇÃO EXPLÍCITA · SOMENTE UPLOAD")}</p><h2 id="transistor-upload-title">${h(labels.uploadHeading)}</h2><p>${h(labels.uploadCopy)}</p><p class="upload-recap" id="transistor-upload-recap">${h(selectedFile ? selectedFile.filename : "")} · ${h(episode.title)}<br>${h(shows[0]?.title || labels.chooseShow)} · Transistor<br>${h(labels.draftOnly)}</p><p id="transistor-upload-progress" class="transistor-progress" role="status" aria-live="polite"></p><label class="transistor-consent"><input type="checkbox" id="transistor-upload-consent"> <span>${h(labels.confirmUpload)}</span></label><div class="dialog-actions"><button class="button secondary" value="cancel">${h(labels.cancel)}</button><button class="button primary" value="confirm" data-action="confirm-transistor-upload" disabled>${h(labels.uploadYes)}</button></div></form></dialog><dialog id="transistor-publish-dialog" class="approval-dialog" aria-labelledby="transistor-publish-title"><form method="dialog"><p class="eyebrow">${h(english ? "SEPARATE EXTERNAL ACTION" : "AÇÃO EXTERNA SEPARADA")}</p><h2 id="transistor-publish-title">${h(labels.publishAction)}</h2><p id="transistor-publish-recap">${h(publication?.title || episode.title)}</p><p id="transistor-publish-progress" class="transistor-progress" role="status" aria-live="polite"></p><label class="transistor-consent"><input type="checkbox" id="transistor-publish-consent"> <span>${h(labels.publishConfirm)}</span></label><div class="dialog-actions"><button class="button secondary" value="cancel">${h(labels.cancel)}</button><button class="button primary" value="confirm" data-action="confirm-transistor-publish" disabled>${h(labels.publishYes)}</button></div></form></dialog>`;
+    const uploadDialog = document.getElementById("transistor-upload-dialog");
+    const publishDialog = document.getElementById("transistor-publish-dialog");
+    uploadDialog.addEventListener("close", () => {
+      document.getElementById("transistor-upload-consent").checked = false;
+      const confirm = uploadDialog.querySelector('[data-action="confirm-transistor-upload"]');
+      if (confirm) confirm.disabled = true;
+    });
+    publishDialog.addEventListener("close", () => {
+      document.getElementById("transistor-publish-consent").checked = false;
+      const confirm = publishDialog.querySelector('[data-action="confirm-transistor-publish"]');
+      if (confirm) confirm.disabled = true;
+    });
     view.dataset.transistorEpisode = id;
-    view.dataset.transistorConfirmUpload = labels.uploadConfirm;
+    view.dataset.transistorLanguage = interfaceLanguage;
+    view.dataset.transistorUploadConfirm = labels.confirmUpload;
     view.dataset.transistorPublishConfirm = labels.publishConfirm;
-    view.dataset.transistorScheduleConfirm = labels.scheduleConfirm;
-    view.dataset.transistorUploading = labels.uploading;
+    view.dataset.transistorConfigError = configurationError ? labels.configError : "";
   }
-
   async function renderVoices(requestId) {
     setNav("voices", "Biblioteca de vozes");
     const result = await api.voices();
@@ -658,6 +671,44 @@
       paintScriptReview();
       document.getElementById("interface-language").focus();
     }
+    if (event.target.id === "transistor-language" && currentRoute.startsWith("#transistor/")) {
+      interfaceLanguage = event.target.value;
+      loadRoute();
+    }
+    if (event.target.id === "transistor-file") {
+      const player = view.querySelector(".transistor-audio audio");
+      const option = event.target.selectedOptions[0];
+      if (player) {
+        player.src = `/api/files/${encodeURIComponent(event.target.value)}`;
+        player.setAttribute("aria-label", `${document.documentElement.lang === "en" ? "Approved audio" : "Áudio aprovado"} · ${option.textContent}`);
+      }
+      const summary = `${option.dataset.filename} · ${option.dataset.size} · ${document.getElementById("transistor-title").value}`;
+      const formRecap = document.getElementById("upload-recap");
+      const dialogRecap = document.getElementById("transistor-upload-recap");
+      if (formRecap) formRecap.textContent = `${summary} · ${document.querySelector("#transistor-show").selectedOptions[0].textContent} · Transistor`;
+      if (dialogRecap) dialogRecap.textContent = `${summary} · ${document.querySelector("#transistor-show").selectedOptions[0].textContent} · Transistor`;
+    }
+    if (event.target.id === "transistor-show") {
+      const show = event.target.selectedOptions[0].textContent;
+      const formRecap = document.getElementById("upload-recap");
+      const dialogRecap = document.getElementById("transistor-upload-recap");
+      if (formRecap) formRecap.textContent = `${formRecap.textContent.split("\n")[0]} · ${show} · Transistor`;
+      if (dialogRecap) dialogRecap.textContent = `${dialogRecap.textContent.split("\n").slice(0, 2).join(" · ")} · ${show} · Transistor`;
+    }
+    if (event.target.id === "transistor-upload-consent") {
+      const confirm = view.querySelector('[data-action="confirm-transistor-upload"]');
+      if (confirm) confirm.disabled = !event.target.checked;
+    }
+    if (event.target.id === "transistor-publish-consent") {
+      const confirm = view.querySelector('[data-action="confirm-transistor-publish"]');
+      if (confirm) confirm.disabled = !event.target.checked;
+    }
+    if (event.target.name === "transistor-action") {
+      const date = document.getElementById("transistor-published-at");
+      if (date) date.disabled = event.target.value !== "scheduled" || !confirmedTransistorDrafts.has(view.dataset.transistorEpisode);
+      const action = view.querySelector('[data-action="open-transistor-publish"]');
+      if (action) action.textContent = event.target.value === "scheduled" ? (document.documentElement.lang === "en" ? "Review schedule confirmation" : "Revisar confirmação de agendamento") : (document.documentElement.lang === "en" ? "Review publication confirmation" : "Revisar confirmação de publicação");
+    }
     if (event.target.id === "generation-language" && currentRoute.startsWith("#generation/")) {
       generationLanguage = event.target.value;
       interfaceLanguage = generationLanguage;
@@ -758,58 +809,106 @@
         button.disabled = false;
       }
     }
-    if (action === "create-transistor-draft") {
-      if (button.disabled || !window.confirm(view.dataset.transistorConfirmUpload)) return;
+    if (action === "save-transistor-metadata") {
       const route = currentRoute.slice(1).split("/");
-      const errorBox = document.getElementById("transistor-error");
+      const button = view.querySelector('[data-action="save-transistor-metadata"]');
+      const state = document.getElementById("transistor-save-state");
       button.disabled = true;
-      button.textContent = view.dataset.transistorUploading;
+      if (state) state.textContent = document.documentElement.lang === "en" ? "Saving locally…" : "Salvando localmente…";
       try {
-        const result = await api.createTransistorDraft(route[1], {
+        await api.updateEpisode(route[1], { title: document.getElementById("transistor-title").value.trim(), description: document.getElementById("transistor-description").value });
+        await loadRoute();
+        showNotice(document.documentElement.lang === "en" ? "Metadata saved locally." : "Metadados salvos localmente.");
+      } catch (error) {
+        if (state) state.textContent = error.message;
+        button.disabled = false;
+      }
+    }
+    if (action === "open-transistor-upload") {
+      const dialog = document.getElementById("transistor-upload-dialog");
+      if (dialog && !button.disabled) dialog.showModal();
+    }
+    if (action === "confirm-transistor-upload") {
+      event.preventDefault();
+      const consent = document.getElementById("transistor-upload-consent");
+      if (!consent || !consent.checked || button.disabled) return;
+      button.disabled = true;
+      button.textContent = document.documentElement.lang === "en" ? "Uploading…" : "Enviando…";
+      document.getElementById("transistor-upload-progress").textContent = document.documentElement.lang === "en" ? "Uploading the approved file and creating a draft. Publishing is not part of this request." : "Enviando o arquivo aprovado e criando um rascunho. Esta solicitação não publica o episódio.";
+      const dialog = document.getElementById("transistor-upload-dialog");
+      const route = currentRoute.slice(1).split("/");
+      try {
+        await api.createTransistorDraft(route[1], {
           show_id: document.getElementById("transistor-show").value,
           file_id: document.getElementById("transistor-file").value,
           summary: document.getElementById("transistor-summary").value,
           keywords: document.getElementById("transistor-keywords").value,
         }, true);
+        if (dialog) dialog.close();
         await loadRoute();
         showNotice(document.documentElement.lang === "en" ? "Transistor draft created. It has not been published." : "Rascunho criado no Transistor. Ainda não foi publicado.");
       } catch (error) {
-        if (errorBox) errorBox.textContent = error.message;
+        const box = document.getElementById("transistor-error");
+        if (box) box.textContent = error.message;
+        document.getElementById("transistor-upload-progress").textContent = "";
+        button.textContent = document.documentElement.lang === "en" ? "Yes, upload audio" : "Sim, enviar áudio";
         button.disabled = false;
-        button.textContent = document.documentElement.lang === "en" ? "Upload audio and create draft" : "Enviar áudio e criar rascunho";
       }
     }
     if (action === "refresh-transistor") {
       button.disabled = true;
+      button.textContent = document.documentElement.lang === "en" ? "Checking status…" : "Consultando status…";
+      const errorBox = document.getElementById("transistor-operation-error");
       try {
         const route = currentRoute.slice(1).split("/");
-        await api.refreshTransistorPublication(route[1]);
+        const result = await api.refreshTransistorPublication(route[1]);
+        if (result.publication && result.publication.status === "draft") confirmedTransistorDrafts.add(route[1]);
+        else confirmedTransistorDrafts.delete(route[1]);
         await loadRoute();
-        showNotice(document.documentElement.lang === "en" ? "Transistor status refreshed." : "Status do Transistor atualizado.");
+        showNotice(document.documentElement.lang === "en" ? "Transistor status read back and refreshed." : "Status lido novamente e atualizado do Transistor.");
       } catch (error) {
-        showNotice(error.message, "error");
+        if (errorBox) errorBox.textContent = `${document.documentElement.lang === "en" ? "Status refresh failed. " : "Falha ao atualizar o status. "}${error.message}`;
+        button.textContent = `↻ ${document.documentElement.lang === "en" ? "Refresh status" : "Atualizar status"}`;
         button.disabled = false;
       }
     }
-    if (action === "publish-transistor") {
-      const status = button.dataset.status;
+    if (action === "open-transistor-publish") {
+      if (button.disabled) return;
+      const selectedAction = view.querySelector('input[name="transistor-action"]:checked');
+      const isSchedule = selectedAction && selectedAction.value === "scheduled";
+      const date = document.getElementById("transistor-published-at");
+      if (isSchedule && (!date.value || !date.reportValidity())) { date.focus(); return; }
+      const dialog = document.getElementById("transistor-publish-dialog");
+      const title = document.getElementById("transistor-publish-title");
+      const confirmButton = dialog.querySelector('[data-action="confirm-transistor-publish"]');
+      title.textContent = isSchedule ? (document.documentElement.lang === "en" ? "Confirm episode schedule" : "Confirme o agendamento") : (document.documentElement.lang === "en" ? "Confirm publish now" : "Confirme a publicação agora");
+      confirmButton.textContent = isSchedule ? (document.documentElement.lang === "en" ? "Confirm schedule" : "Confirmar agendamento") : (document.documentElement.lang === "en" ? "Publish now" : "Publicar agora");
+      const recap = document.getElementById("transistor-publish-recap");
+      if (recap) recap.textContent = isSchedule ? `${date.value} · ${document.querySelector(".timezone-note").textContent}` : (document.documentElement.lang === "en" ? "This will change the remote episode status to Published." : "O status do episódio remoto será alterado para Publicado.");
+      dialog.showModal();
+    }
+    if (action === "confirm-transistor-publish") {
+      event.preventDefault();
+      const consent = document.getElementById("transistor-publish-consent");
+      if (!consent || !consent.checked || button.disabled) return;
+      const selectedAction = view.querySelector('input[name="transistor-action"]:checked');
+      const status = selectedAction ? selectedAction.value : "published";
       const time = document.getElementById("transistor-published-at");
-      const publishedAt = status === "scheduled" && time ? time.value : "";
-      if (status === "scheduled" && !publishedAt) {
-        time.focus();
-        time.reportValidity();
-        return;
-      }
-      const prompt = status === "scheduled" ? view.dataset.transistorScheduleConfirm : view.dataset.transistorPublishConfirm;
-      if (button.disabled || !window.confirm(prompt)) return;
+      const dialog = document.getElementById("transistor-publish-dialog");
       const route = currentRoute.slice(1).split("/");
       button.disabled = true;
+      button.textContent = document.documentElement.lang === "en" ? "Submitting…" : "Enviando…";
+      document.getElementById("transistor-publish-progress").textContent = document.documentElement.lang === "en" ? "Sending the confirmed publication request. Do not retry until status is refreshed." : "Enviando a solicitação confirmada. Não tente novamente antes de atualizar o status.";
       try {
-        await api.publishTransistorEpisode(route[1], status, publishedAt, true);
+        await api.publishTransistorEpisode(route[1], status, status === "scheduled" ? time.value : "", true);
+        confirmedTransistorDrafts.delete(route[1]);
+        if (dialog) dialog.close();
         await loadRoute();
-        showNotice(status === "scheduled" ? (document.documentElement.lang === "en" ? "Transistor episode scheduled." : "Episódio agendado no Transistor.") : (document.documentElement.lang === "en" ? "Episode published on Transistor." : "Episódio publicado no Transistor."));
+        showNotice(status === "scheduled" ? (document.documentElement.lang === "en" ? "Episode scheduled on Transistor. It is not marked published." : "Episódio agendado no Transistor. Ainda não está marcado como publicado.") : (document.documentElement.lang === "en" ? "Episode published on Transistor." : "Episódio publicado no Transistor."));
       } catch (error) {
-        showNotice(error.message, "error");
+        const box = document.getElementById("transistor-operation-error");
+        if (box) box.textContent = `${document.documentElement.lang === "en" ? "Publication action failed. " : "Falha na ação de publicação. "}${error.message}`;
+        document.getElementById("transistor-publish-progress").textContent = document.documentElement.lang === "en" ? "The response is not a confirmed status. Refresh before considering another action." : "A resposta não confirma o status. Atualize antes de considerar outra ação.";
         button.disabled = false;
       }
     }

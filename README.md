@@ -277,6 +277,27 @@ Evidence boundary: the local application, SQLite, file storage/retrieval, browse
 
 No live Fish Audio MCP connection/call or audio generation was performed; the Codex handoff is user-mediated, and imported test audio is a deterministic local fake. The service prompts for faithful adaptation but does not fact-check or guarantee output quality. The verified documentation does not establish a complete fixed cue vocabulary, so tag compatibility is not validated. No live LLM provider was called during local tests; narration E2E suggestion behavior uses deterministic browser fixtures and an injected local provider fake, while provider-unconfigured behavior uses the real local API without a key. The Phase 5 Transistor adapter and its local/mocked evidence are documented below; no Transistor account or credentials were available, so no live account operation was attempted. Cloud storage and automatic publication remain out of scope.
 
+## Phase 5 Transistor publishing UI (ticket #60)
+
+The responsive `#transistor/<episode-id>` screen follows the approved Phase 5 Penpot workflow: select a show returned by Transistor, review/edit and explicitly save local title/description, choose only an approved local audio version with a native local preview, then confirm the external upload using a separate checkbox and action. Upload creates a draft only. Publishing/scheduling are unavailable until the user separately refreshes and reads back a confirmed `draft`; they then require a second checkbox confirmation and action. Scheduling is disabled without a supported show time zone and labels the entered time as podcast-local. Status, uncertain outcomes, errors, safe retry guidance, and the difference between scheduled and published are explicit. PT-BR/EN can be selected on this screen independently of episode content language. No automatic external request is initiated by page load, local metadata save, playback, or status rendering.
+
+UI assumptions: the browser's `datetime-local` value is interpreted by the backend in the selected Transistor show's time zone (not the browser's zone); the UI states that timezone boundary and relies on backend validation for past, ambiguous, or nonexistent times. A newly created draft must be status-refreshed in the current page session before publish controls unlock; a reload requires another read-back. No live credentials/account were present, so all UI tests inject deterministic local API fakes; no live show lookup, audio transfer, draft, publish, or schedule was attempted.
+
+Ticket #60 checks from the repository root:
+
+```sh
+npm ci
+npm test
+node --experimental-test-coverage --test tests/frontend_transistor.test.js
+node --check static/app.js
+npm run test:e2e
+python -m pytest --cov=. --cov-report=term
+python -m ruff check .
+git diff --check
+```
+
+The focused Transistor UI tests verify approved-audio filtering/preview, separate consent-gated upload and draft-only behavior, local metadata edits, a required remote status read-back, separate publish and schedule confirmations, timezone-unavailable blocking, and visible status-refresh/configuration errors without retries. The focused test module's line coverage is measured separately; whole `static/app.js` contains legacy screens and is not represented by that focused percentage. No JavaScript lint or build script is configured.
+
 ## Phase 5 Transistor integration (ticket #59)
 
 The local **Transistor publishing** screen is available from the audio review page at `#transistor/<episode-id>`. It uses only operations and fields documented in the [official Transistor API reference](https://developers.transistor.fm/) and the project's Phase 1 Integration Capability Report: server-side `x-api-key` auth, `GET /v1/shows`, `GET /v1/shows/:id`, `GET /v1/episodes/:id`, `GET /v1/episodes/authorize_upload`, raw `PUT` to the authorized upload URL, `POST /v1/episodes` (creates a draft), and the separate `PATCH /v1/episodes/:id/publish` operation.
