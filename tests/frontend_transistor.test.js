@@ -25,7 +25,7 @@ async function transistorStudio(t, initialPublication = null, options = {}) {
     updateEpisode: async (id, value) => { calls.push(["metadata", id, value]); Object.assign(episode, value); return { ...episode }; },
     episodeFiles: async () => ({ files }),
     transistorPublication: async () => ({ publication }),
-    transistorShows: async () => options.showsError ? Promise.reject(new Error("safe 503")) : ({ shows: [{ id: "show-1", title: "Code & Scars", time_zone: options.timeZone === false ? "" : "America/Sao_Paulo" }] }),
+    transistorShows: async () => options.showsError ? Promise.reject(new Error("safe 503")) : ({ shows: options.shows || [{ id: "show-1", title: "Code & Scars", time_zone: options.timeZone === false ? "" : "America/Sao_Paulo" }] }),
     createTransistorDraft: async (id, value, confirmed) => {
       calls.push(["draft", id, value, confirmed]);
       if (options.createFailure) {
@@ -94,6 +94,55 @@ test("upload requires a separate checked confirmation and creates a draft only",
   assert.match(doc.body.textContent, /Rascunho salvo/);
   assert.equal(doc.querySelector('[data-action="open-transistor-publish"]').disabled, true, "publishing waits for a remote status read-back");
   assert.equal(calls.some(([kind]) => kind === "publish"), false);
+});
+
+const multipleShows = [
+  { id: "show-1", title: "Code & Scars" },
+  { id: "show-2", title: "Second podcast & guests" },
+];
+
+test("both upload recaps and the draft request identify the newly selected show", async (t) => {
+  const { doc, calls } = await transistorStudio(t, null, { shows: multipleShows });
+  const select = doc.getElementById("transistor-show");
+  const panelShow = doc.querySelector("#upload-recap [data-recap-show]");
+  const dialogShow = doc.querySelector("#transistor-upload-recap [data-recap-show]");
+  assert.equal(select.value, "show-1");
+  assert.equal(panelShow.textContent, "Code & Scars · Transistor");
+  select.value = "show-2";
+  select.dispatchEvent(new doc.defaultView.Event("change", { bubbles: true }));
+  assert.equal(panelShow.textContent, "Second podcast & guests · Transistor");
+
+  doc.querySelector('[data-action="open-transistor-upload"]').click();
+  assert.equal(doc.getElementById("transistor-upload-dialog").open, true);
+  assert.equal(dialogShow.textContent, "Second podcast & guests · Transistor");
+  assert.deepEqual(calls, [], "selecting and reviewing do not upload");
+  await consentAndClick(doc, "transistor-upload-consent", '[data-action="confirm-transistor-upload"]');
+  assert.equal(calls[0][2].show_id, "show-2");
+});
+
+test("retry recaps identify the locked show even if it is not first in the account", async (t) => {
+  const failedUpload = { status: "upload_failed", show_id: "show-2", file_id: "file-approved" };
+  const { doc, calls } = await transistorStudio(t, failedUpload, { shows: multipleShows });
+  const select = doc.getElementById("transistor-show");
+  assert.equal(select.disabled, true);
+  assert.equal(select.value, "show-2");
+  assert.equal(doc.querySelector("#upload-recap [data-recap-show]").textContent, "Second podcast & guests · Transistor");
+  doc.querySelector('[data-action="open-transistor-upload"]').click();
+  assert.equal(doc.querySelector("#transistor-upload-recap [data-recap-show]").textContent, "Second podcast & guests · Transistor");
+  await consentAndClick(doc, "transistor-upload-consent", '[data-action="confirm-transistor-upload"]');
+  assert.equal(calls[0][2].show_id, "show-2");
+});
+
+test("retry cannot fall back to another show when its original destination is unavailable", async (t) => {
+  const failedUpload = { status: "upload_failed", show_id: "show-2", file_id: "file-approved" };
+  const { doc, calls } = await transistorStudio(t, failedUpload);
+  assert.equal(doc.getElementById("transistor-show").value, "");
+  assert.match(doc.querySelector(".transistor-show [role=alert]").textContent, /podcast da tentativa anterior/);
+  const upload = doc.querySelector('[data-action="open-transistor-upload"]');
+  assert.equal(upload.disabled, true);
+  upload.click();
+  assert.equal(doc.getElementById("transistor-upload-dialog").open, false);
+  assert.deepEqual(calls, []);
 });
 
 test("metadata is saved locally, then draft status must be refreshed before a distinct publish confirmation", async (t) => {
