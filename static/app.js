@@ -400,6 +400,7 @@
     const english = generationLanguage === "en";
     setShellLanguage(generationLanguage);
     document.documentElement.lang = english ? "en" : "pt-BR";
+    document.getElementById("breadcrumb").textContent = english ? "Studio / Episodes / Generate and review audio" : "Estúdio / Episódios / Gerar e revisar áudio";
     currentVoices = voiceResult.voices || [];
     const voice = currentVoices.find((item) => item.id === episode.selected_voice_id);
     const matchingVoices = currentVoices.filter((item) => item.language === episode.language);
@@ -407,7 +408,7 @@
     const handoffs = handoffResult.handoffs || [];
     const files = fileResult.files || [];
     const labels = english ? {
-      title: "Prepare and review audio", intro: "Manual Codex handoff · local audio import · no automatic provider calls.", locale: "Interface language",
+      title: "Prepare and review audio", intro: "Manual Codex handoff · local audio import · no automatic provider calls.", locale: "Interface language", handoffStep: "Codex handoff",
       safety: "Generation starts only after your separate confirmation in Codex.", safetyCopy: "This studio does not connect to Fish Audio, guess MCP arguments, or replace an existing version.",
       script: "Exact approved Fish Audio script", voice: "Registered voice", saveVoice: "Save voice selection", model: "Model preference",
       notReady: "Approve the saved Fish Audio script and select an available registered voice before preparing a handoff.",
@@ -420,7 +421,7 @@
       review: "Review audio version", approve: "Approve this audio version?", reject: "Reject this audio version? The local file will remain preserved.", confirmReview: "Confirm review", cancelReview: "Keep listening", preserve: "Other versions remain unchanged. This does not publish or upload the episode.",
       voiceNone: "No voice selected", voiceUnavailable: "Selected voice is not marked available", scriptApproval: "Script approval", uploadInfo: "The imported file is associated with the approved script and selected voice from this handoff. This studio cannot verify what the Codex operation actually synthesized.", confirmHandoff: "Prepare request for Codex?", cancelHandoff: "Back to review", yesHandoff: "Yes, prepare local handoff", handoffConfirmCopy: "This saves a local snapshot only. No audio is generated here. In Codex, check its live tool schema and confirm any paid generation separately.", generationHelp: "No audio starts here. You must separately review and confirm any generation in Codex.",
     } : {
-      title: "Preparar e revisar áudio", intro: "Handoff manual no Codex · importação local · nenhuma chamada automática ao provedor.", locale: "Idioma da interface",
+      title: "Preparar e revisar áudio", intro: "Handoff manual no Codex · importação local · nenhuma chamada automática ao provedor.", locale: "Idioma da interface", handoffStep: "Handoff no Codex",
       safety: "A geração só começa após sua confirmação separada no Codex.", safetyCopy: "Este estúdio não se conecta ao Fish Audio, não presume argumentos MCP e não substitui versões existentes.",
       script: "Script Fish Audio exato aprovado", voice: "Voz registrada", saveVoice: "Salvar seleção de voz", model: "Preferência de modelo",
       notReady: "Aprove o script Fish Audio salvo e selecione uma voz registrada disponível antes de preparar o handoff.",
@@ -441,7 +442,7 @@
     const selectedVoiceSummary = voice ? `${h(voice.display_name)} · ${h(voice.fish_audio_id)} · ${h(voice.availability)}` : h(labels.voiceNone);
     view.innerHTML = `<div class="review-language"><label for="generation-language">${h(labels.locale)}</label><select id="generation-language" aria-label="${h(labels.locale)}"><option value="pt" ${english ? "" : "selected"}>PT-BR</option><option value="en" ${english ? "selected" : ""}>EN</option></select></div>${heading(labels.title, `${episode.title} · ${labels.intro}`)}
       <section class="editorial-safety"><strong>✓ ${h(labels.safety)}</strong><p>${h(labels.safetyCopy)} ${h(labels.noMcp)}</p></section>
-      <nav class="script-steps generation-steps" aria-label="${english ? "Audio workflow" : "Fluxo de áudio"}"><span>01 · ${h(labels.script)} ${approved ? "✓" : "○"}</span><span>02 · ${h(labels.voice)} ${voice && voice.availability === "available" ? "✓" : "○"}</span><span aria-current="step">03 · Codex handoff</span><span>04 · ${h(labels.history)}</span></nav>
+      <nav class="script-steps generation-steps" aria-label="${english ? "Audio workflow" : "Fluxo de áudio"}"><span>01 · ${h(labels.script)} ${approved ? "✓" : "○"}</span><span>02 · ${h(labels.voice)} ${voice && voice.availability === "available" ? "✓" : "○"}</span><span aria-current="step">03 · ${h(labels.handoffStep)}</span><span>04 · ${h(labels.history)}</span></nav>
       <div class="generation-columns"><section class="panel generation-setup"><span class="eyebrow">${h(labels.script)}</span><textarea readonly aria-label="${h(labels.script)}">${h(episode.fish_audio_script)}</textarea>
        <p class="generation-script-state">${approved ? `✓ ${h(labels.scriptApproval)} · ${h(dateLabel(episode.fish_audio_approved_at, english ? "en-US" : "pt-BR"))}` : h(labels.notReady)}</p>${episode.fish_audio_approved_sha256 ? `<code class="script-digest">SHA-256 · ${h(episode.fish_audio_approved_sha256)}</code>` : ""}<a class="text-link" href="#scripts/${encodeURIComponent(episode.id)}">${english ? "Review approved script" : "Revisar script aprovado"} →</a>
        <h3>${h(labels.voice)}</h3><label class="sr-only" for="generation-voice">${h(labels.voice)}</label><div class="voice-selection"><select id="generation-voice" ${matchingVoices.length ? "" : "disabled"}><option value="">${h(labels.voiceNone)}</option>${voiceOptions}</select><button class="button secondary small" data-action="save-generation-voice" ${matchingVoices.length && episode.selected_voice_id ? "" : "disabled"}>${h(labels.saveVoice)}</button></div><p id="generation-voice-summary">${selectedVoiceSummary} ${voice && voice.availability !== "available" ? `· ${h(labels.voiceUnavailable)}` : ""}</p>
@@ -781,7 +782,7 @@
       const route = currentRoute.slice(1).split("/");
       await api.importGeneration(route[1], input.dataset.generationFile, file);
       await loadRoute();
-      showNotice("Áudio importado como uma nova versão local. Nenhum arquivo anterior foi alterado.");
+      showNotice(document.documentElement.lang === "en" ? "Audio imported as a new local version. No previous file was changed." : "Áudio importado como uma nova versão local. Nenhum arquivo anterior foi alterado.");
     } catch (error) {
       const handoffError = document.querySelector(`[data-handoff-error="${CSS.escape(input.dataset.generationFile)}"]`);
       if (handoffError) handoffError.textContent = error.message;

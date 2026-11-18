@@ -243,16 +243,20 @@ test("explicit Codex handoff imports a separate audio version without calling MC
 
   await page.goto(`${baseURL}/#generation/${episode.id}`);
   await expect(page.getByRole("heading", { name: "Prepare and review audio" })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const generationMobile = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(generationMobile[0]).toBeLessThanOrEqual(generationMobile[1]);
   await expect(page.getByLabel("Exact approved Fish Audio script")).toHaveValue(script);
   await expect(page.getByText("Fish Audio Drama 3 · drama-3")).toBeVisible();
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Prepare Codex handoff" }).click();
+  await expect(page.getByRole("dialog", { name: "Prepare request for Codex?" })).toBeVisible();
+  await page.getByRole("button", { name: "Yes, prepare local handoff" }).click();
   await expect(page.getByText("Awaiting your action in Codex")).toBeVisible();
-  await expect(page.getByText("Local narrator · drama-3")).toBeVisible();
+  await expect(page.getByText("Local narrator · Drama 3 / drama-3")).toBeVisible();
   await expect(page.getByRole("link", { name: "Download handoff JSON" })).toBeVisible();
   const handoffInput = page.locator('input[data-generation-file]');
   await handoffInput.setInputFiles({ name: "codex-result.mp3", mimeType: "audio/mpeg", buffer: Buffer.from("local imported bytes") });
-  await expect(page.getByRole("status")).toContainText("Áudio importado como uma nova versão local");
+  await expect(page.getByRole("status")).toContainText("Audio imported as a new local version");
   await expect(page.getByText("Audio imported · a separate local version was created")).toBeVisible();
   const files = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/files`)).json()).files;
   expect(files).toHaveLength(2);
@@ -266,8 +270,9 @@ test("explicit Codex handoff imports a separate audio version without calling MC
   expect(preserved.approval_status).toBe("approved");
   const preservedBytes = await (await page.request.get(`${baseURL}/api/files/${oldRecord.id}`)).body();
   expect(preservedBytes).toEqual(Buffer.from("already approved bytes"));
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Approve version" }).click();
+  await expect(page.getByRole("dialog", { name: "Review audio version" })).toBeVisible();
+  await page.getByRole("button", { name: "Confirm review" }).click();
   const reviewed = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/files`)).json()).files;
   expect(reviewed.find((item) => item.id === imported.id).approval_status).toBe("approved");
   expect(reviewed.find((item) => item.id === oldRecord.id).approval_status).toBe("approved");

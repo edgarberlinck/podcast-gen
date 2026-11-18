@@ -105,7 +105,7 @@ test("generation review localizes independently, selects only registered voices 
   assert.equal(files.find((item) => item.id === "file-pending").approval_status, "approved");
   assert.equal(files.find((item) => item.id === "file-approved").approval_status, "approved");
   assert.deepEqual(calls.at(-1), ["reviewAudioFile", "file-pending", "approved", true]);
-  assert.match(doc.querySelector("[data-audio-version='file-pending']").textContent, /Approved · preserved/);
+  assert.match(doc.querySelector("[data-audio-version='file-pending']").textContent, /Aprovada · preservada/);
   assert.equal(doc.querySelector('[data-action="review-audio"][data-id="file-pending"]'), null);
   assert.equal(calls.some(([name]) => /fish|transistor|publish/i.test(name)), false);
 });

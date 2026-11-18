@@ -89,7 +89,23 @@ The generation screen presents the exact saved, approved Fish Audio script, its 
 
 The local audio history retains each import, shows voice/model/import timestamp and the native player's duration when browser metadata is available, and provides playback and download controls. New imported takes remain pending until an explicit approve/reject confirmation. Approved and rejected files stay in history; a fresh import gets its own generation directory and cannot replace an approved recording. The UI displays the intended handoff provenance but cannot prove what a user-run Codex operation actually synthesized. Audio bytes in automated UI tests are deterministic placeholders, not playable Fish Audio output.
 
-UI assumptions: unknown duration is shown as unavailable rather than estimated; no new generation parameters are inferred from the REST API; review confirmations are local-only and never publish/upload; unknown live MCP/schema errors are represented with safe local guidance rather than vendor traces. The tests use fake local API responses for frontend state and do not call Fish Audio or Transistor.
+UI assumptions: only the currently saved script with its matching approval digest can be selected; the API does not expose a history of approved script revisions. Unknown duration is shown as unavailable rather than estimated; no new generation parameters are inferred from the REST API; review confirmations are local-only and never publish/upload; unknown live MCP/schema errors are represented with safe local guidance rather than vendor traces. The tests use fake local API responses for frontend state and do not call Fish Audio or Transistor.
+
+Ticket #56 local checks (repository root):
+
+```sh
+npm ci
+npm test
+node --experimental-test-coverage --test tests/*.test.js
+npm run test:e2e
+python -m pytest --cov=app --cov=narration --cov-report=term-missing
+python -m ruff check .
+node --check static/app.js
+node --check tests/e2e/core-workflows.spec.js
+git diff --check
+```
+
+Recorded results: `npm test` passed 13 Node tests; measured `static/app.js` unit line coverage was 44.33%, below the 80% project target for the entire legacy UI file. The focused generation behavior is also covered by the local Chromium workflow, which exercises the rendered UI. Python passed 126 tests at 90% combined coverage (`app.py` 89%, `narration.py` 92%); Ruff passed. Playwright Chromium passed 12 tests, including the responsive manual handoff/import/review flow. All fake-imported audio is test bytes, not playable vendor output. No Fish MCP/Codex call, paid generation, live LLM, audio codec validation, Transistor, or publishing was exercised. The checks are local only; full WCAG and cross-browser review remain outstanding.
 
 ## Fish Audio workflow boundary (Phase 4, user-mediated)
 
