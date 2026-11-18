@@ -26,7 +26,7 @@ async function transistorStudio(t, initialPublication = null) {
     transistorShows: async () => ({ shows: [{ id: "show-1", title: "Code & Scars", time_zone: "America/Sao_Paulo" }] }),
     createTransistorDraft: async (id, value, confirmed) => {
       calls.push(["draft", id, value, confirmed]);
-      publication = { episode_id: id, file_id: value.file_id, show_id: value.show_id, remote_episode_id: "remote-1", status: "draft", show_title: "Code & Scars", show_time_zone: "America/Sao_Paulo" };
+      publication = { episode_id: id, file_id: value.file_id, show_id: value.show_id, remote_episode_id: "remote-1", status: "draft", show_title: "Code & Scars", show_time_zone: "America/Sao_Paulo", show_time_zone_supported: true };
       return { publication };
     },
     refreshTransistorPublication: async (id) => {
@@ -64,7 +64,7 @@ test("Transistor screen uploads only explicitly selected approved audio and stop
 });
 
 test("publishing and scheduling each require a separate confirmation; refresh reads status", async (t) => {
-  const draft = { episode_id: "episode-1", file_id: "file-approved", show_id: "show-1", remote_episode_id: "remote-1", status: "draft", show_title: "Code & Scars", show_time_zone: "America/Sao_Paulo" };
+  const draft = { episode_id: "episode-1", file_id: "file-approved", show_id: "show-1", remote_episode_id: "remote-1", status: "draft", show_title: "Code & Scars", show_time_zone: "America/Sao_Paulo", show_time_zone_supported: true };
   const { doc, calls, confirmations } = await transistorStudio(t, draft);
   doc.querySelector('[data-action="publish-transistor"][data-status="published"]').click();
   await tick();
@@ -84,4 +84,12 @@ test("publishing and scheduling each require a separate confirmation; refresh re
   await tick();
   assert.equal(scheduledStudio.calls.at(-1)[0], "refresh");
   assert.match(scheduledStudio.doc.body.textContent, /Publicado/);
+});
+
+test("scheduling stays disabled when the show time zone is unavailable", async (t) => {
+  const draft = { episode_id: "episode-1", file_id: "file-approved", show_id: "show-1", remote_episode_id: "remote-1", status: "draft", show_title: "Code & Scars", show_time_zone: "", show_time_zone_supported: false };
+  const { doc } = await transistorStudio(t, draft);
+  assert.equal(doc.querySelector('[data-action="publish-transistor"][data-status="scheduled"]').disabled, true);
+  assert.equal(doc.querySelector('[data-action="publish-transistor"][data-status="published"]').disabled, false);
+  assert.match(doc.body.textContent, /servidor não reconhece o fuso retornado/i);
 });

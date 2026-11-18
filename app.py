@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import parse_qs, unquote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from wsgiref.simple_server import make_server
 
 from narration import SuggestionError, provider_from_environment, source_digest
@@ -43,6 +44,16 @@ class ApiError(Exception):
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def schedule_timezone_available(value: str) -> bool:
+    if not value:
+        return False
+    try:
+        ZoneInfo(value)
+        return True
+    except (KeyError, ValueError, ZoneInfoNotFoundError):
+        return False
 
 
 def validate_text(value, field: str, *, required=False, maximum=100_000) -> str:
@@ -625,6 +636,7 @@ class Studio:
 
         stamp = now()
         metadata = {"show_title": str(show.get("title", "")), "show_time_zone": show_time_zone,
+                    "show_time_zone_supported": schedule_timezone_available(show_time_zone),
                     "title": episode["title"], "summary": summary, "description": episode["description"], "keywords": keywords}
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -706,7 +718,6 @@ class Studio:
             if not isinstance(value, str) or not zone_name:
                 raise ApiError(400, "invalid_schedule", "Choose a local publication date and time in the selected show's time zone.")
             try:
-                from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
                 from datetime import timedelta
                 naive = datetime.strptime(value, "%Y-%m-%dT%H:%M")
                 zone = ZoneInfo(zone_name)

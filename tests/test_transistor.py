@@ -186,15 +186,41 @@ def test_publish_and_schedule_are_explicit_and_refreshed(setup_studio):
     assert status == 200 and refreshed["publication"]["status"] == "published"
 
 
-def test_schedule_rejects_past_invalid_and_dst_ambiguous_values(setup_studio):
+def test_schedule_rejects_past_invalid_and_dst_gap_or_ambiguous_values(setup_studio):
     _, client, request, episode, audio = setup_studio
+    client.get_show = lambda show_id: {"id": show_id, "title": "Code & Scars", "time_zone": "America/New_York"}
     approve_audio(request, episode, audio)
     create_draft(request, episode, audio)
     path = f"/api/episodes/{episode['id']}/transistor/publish"
-    for value in ("2020-01-01T10:00", "not-a-date", "2026-11-01T01:30"):
+    for value in ("2020-01-01T10:00", "not-a-date", "2027-03-14T02:30", "2027-11-07T01:30"):
         status, _, error = request("POST", path, {"status": "scheduled", "published_at": value, "confirm_publish": True})
         assert status == 400 and error["error"]["code"] == "invalid_schedule"
     assert not any(call[0] == "publish" for call in client.calls)
+
+
+def test_uncertain_publish_is_not_retried_until_explicit_status_refresh(setup_studio):
+    _, client, request, episode, audio = setup_studio
+    approve_audio(request, episode, audio)
+    create_draft(request, episode, audio)
+    original_publish = client.publish
+
+    def lose_response(*_args):
+        client.calls.append(("publish_response_lost",))
+        raise TransistorError("network_error", "The private response must not be shown.")
+
+    client.publish = lose_response
+    path = f"/api/episodes/{episode['id']}/transistor/publish"
+    status, _, error = request("POST", path, {"status": "published", "confirm_publish": True})
+    assert status == 502 and error["error"]["code"] == "transistor_publish_uncertain"
+    assert "private" not in json.dumps(error)
+    assert request("GET", f"/api/episodes/{episode['id']}/transistor")[2]["publication"]["status"] == "publish_uncertain"
+    assert not any(call[0] == "publish" for call in client.calls)
+    status, _, refreshed = request("POST", f"/api/episodes/{episode['id']}/transistor/refresh", {})
+    assert status == 200 and refreshed["publication"]["status"] == "draft"
+    assert not any(call[0] == "publish" for call in client.calls)
+    client.publish = original_publish
+    assert request("POST", path, {"status": "published", "confirm_publish": True})[0] == 200
+    assert sum(call[0] == "publish" for call in client.calls) == 1
 
 
 def test_external_status_change_blocks_a_second_publish(setup_studio):

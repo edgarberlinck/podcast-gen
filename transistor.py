@@ -14,6 +14,16 @@ API_ROOT = "https://api.transistor.fm/v1"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never forward API credentials or media to a redirect destination."""
+
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
+_DEFAULT_OPENER = urllib.request.build_opener(_NoRedirectHandler()).open
+
+
 class TransistorError(Exception):
     """Safe, non-sensitive failure to complete a Transistor operation."""
 
@@ -26,7 +36,7 @@ class TransistorError(Exception):
 class TransistorClient:
     def __init__(self, api_key: str | None = None, opener=None):
         self._api_key = api_key if api_key is not None else os.environ.get("TRANSISTOR_API_KEY", "")
-        self._opener = opener or urllib.request.urlopen
+        self._opener = opener or _DEFAULT_OPENER
 
     @property
     def configured(self) -> bool:
