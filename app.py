@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, unquote
 from wsgiref.simple_server import make_server
 
 from narration import SuggestionError, provider_from_environment, source_digest
+from transistor import TransistorClient, TransistorError
 
 LOG = logging.getLogger("codigo_cicatriz")
 LANGUAGES = {"pt", "en"}
@@ -133,6 +134,12 @@ class Studio:
                     suggested_text TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
                     approval_status TEXT NOT NULL DEFAULT 'pending' CHECK(approval_status='pending'),
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS transistor_publications (
+                    episode_id TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+                    file_id TEXT NOT NULL REFERENCES files(id), show_id TEXT NOT NULL,
+                    remote_episode_id TEXT, status TEXT NOT NULL, published_at TEXT,
+                    metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_episodes_updated ON episodes(updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_suggestions_episode ON narration_suggestions(episode_id, created_at DESC);
@@ -571,6 +578,172 @@ class Studio:
             return [dict(row) for row in db.execute("SELECT * FROM files WHERE episode_id=? ORDER BY created_at DESC,id DESC",
                                                     (episode["id"],)).fetchall()]
 
+    def get_transistor_publication(self, episode_id):
+        episode = self.get_episode(episode_id)
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM transistor_publications WHERE episode_id=?", (episode["id"],)).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        metadata = json.loads(record.pop("metadata_json"))
+        return {**record, **metadata}
+
+    def _set_transistor_state(self, episode_id, status, *, remote_episode_id=None, published_at=None):
+        with self.connect() as db:
+            db.execute("""UPDATE transistor_publications SET status=?,
+                remote_episode_id=COALESCE(?,remote_episode_id), published_at=?,updated_at=? WHERE episode_id=?""",
+                (status, remote_episode_id, published_at, now(), episode_id))
+
+    def create_transistor_draft(self, episode_id, body, client):
+        allowed = {"file_id", "show_id", "summary", "keywords", "confirm_upload"}
+        if set(body) - allowed:
+            raise ApiError(400, "unknown_fields", "Unsupported Transistor draft fields.")
+        if body.get("confirm_upload") is not True:
+            raise ApiError(400, "confirmation_required", "Explicit confirmation is required to upload audio and create a Transistor draft.")
+        file_id = body.get("file_id")
+        show_id = validate_text(body.get("show_id"), "show_id", required=True, maximum=200)
+        if not isinstance(file_id, str):
+            raise ApiError(400, "invalid_field", "file_id must identify an approved local audio file.")
+        episode = self.get_episode(episode_id)
+        with self.connect() as db:
+            file_row = db.execute("SELECT * FROM files WHERE id=? AND episode_id=?", (file_id, episode["id"])).fetchone()
+        if file_row is None:
+            raise ApiError(404, "not_found", "Audio file not found for this episode.")
+        file_row = dict(file_row)
+        if file_row["approval_status"] != "approved":
+            raise ApiError(409, "audio_not_approved", "Only audio with explicit local approval can be uploaded to Transistor.")
+        summary = validate_text(body.get("summary", episode["description"]), "summary", maximum=10_000)
+        keywords = validate_text(body.get("keywords", ""), "keywords", maximum=2_000)
+        try:
+            show = client.get_show(show_id)
+        except TransistorError as exc:
+            status = 503 if exc.code == "not_configured" else 502
+            raise ApiError(status, "transistor_" + exc.code, exc.message) from None
+        if str(show.get("id")) != show_id or not isinstance(show.get("time_zone"), str) or not show["time_zone"].strip():
+            raise ApiError(502, "transistor_show_invalid", "Transistor did not return this show's publishing time zone.")
+
+        stamp = now()
+        metadata = {"show_title": str(show.get("title", "")), "show_time_zone": show["time_zone"],
+                    "title": episode["title"], "summary": summary, "description": episode["description"], "keywords": keywords}
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT * FROM transistor_publications WHERE episode_id=?", (episode["id"],)).fetchone()
+            if current:
+                if current["file_id"] != file_id or current["show_id"] != show_id or current["status"] != "upload_failed":
+                    raise ApiError(409, "transistor_already_started", "A Transistor draft attempt already exists for this episode. Refresh its status; do not retry an uncertain create operation.")
+                db.execute("UPDATE transistor_publications SET status='uploading',metadata_json=?,updated_at=? WHERE episode_id=?",
+                           (json.dumps(metadata, ensure_ascii=False), stamp, episode["id"]))
+            else:
+                db.execute("""INSERT INTO transistor_publications
+                    (episode_id,file_id,show_id,status,metadata_json,created_at,updated_at)
+                    VALUES(?,?,?,'uploading',?,?,?)""", (episode["id"], file_id, show_id,
+                    json.dumps(metadata, ensure_ascii=False), stamp, stamp))
+
+        path = self._episode_dir(episode["id"]) / "generations" / file_row["generation_id"] / ("audio" + Path(file_row["filename"]).suffix.lower())
+        try:
+            authorization = client.authorize_upload(file_row["filename"])
+            client.upload_audio(authorization["upload_url"], authorization["content_type"], path)
+        except TransistorError as exc:
+            self._set_transistor_state(episode["id"], "upload_failed")
+            status = 503 if exc.code == "not_configured" else 502
+            raise ApiError(status, "transistor_" + exc.code, exc.message) from None
+        except OSError:
+            self._set_transistor_state(episode["id"], "upload_failed")
+            raise ApiError(500, "audio_unavailable", "The approved local audio file could not be read; it was not attached to a draft.") from None
+
+        try:
+            remote = client.create_draft(show_id, {"title": episode["title"], "description": episode["description"],
+                                                   "summary": summary, "keywords": keywords}, authorization["audio_url"])
+            remote_id = str(remote["id"])
+            remote_status = remote.get("status") or "draft"
+            if remote_status != "draft":
+                raise TransistorError("unexpected_create_status", "Transistor returned an unexpected draft status.")
+        except TransistorError:
+            self._set_transistor_state(episode["id"], "creation_uncertain")
+            raise ApiError(502, "transistor_creation_uncertain", "Transistor may have received the draft request. Refresh or inspect the account before any retry; this studio will not create a duplicate.") from None
+        self._set_transistor_state(episode["id"], "draft", remote_episode_id=remote_id)
+        return self.get_transistor_publication(episode["id"])
+
+    def refresh_transistor_publication(self, episode_id, client):
+        publication = self.get_transistor_publication(episode_id)
+        if publication is None:
+            raise ApiError(404, "transistor_not_started", "No Transistor draft is recorded for this episode.")
+        if not publication.get("remote_episode_id"):
+            raise ApiError(409, "transistor_manual_reconciliation", "No remote episode ID was confirmed. Inspect Transistor manually; automatic retry is disabled to prevent duplicates.")
+        try:
+            remote = client.get_episode(publication["remote_episode_id"])
+        except TransistorError as exc:
+            status = 503 if exc.code == "not_configured" else 502
+            raise ApiError(status, "transistor_" + exc.code, exc.message) from None
+        remote_status = remote.get("status")
+        if remote_status not in {"draft", "scheduled", "published"}:
+            raise ApiError(502, "transistor_status_invalid", "Transistor returned an unsupported episode status.")
+        self._set_transistor_state(episode_id, remote_status, published_at=remote.get("published_at"))
+        return self.get_transistor_publication(episode_id)
+
+    def publish_transistor_episode(self, episode_id, body, client):
+        allowed = {"status", "published_at", "confirm_publish"}
+        if set(body) - allowed:
+            raise ApiError(400, "unknown_fields", "Unsupported Transistor publication fields.")
+        if body.get("confirm_publish") is not True:
+            raise ApiError(400, "confirmation_required", "A separate explicit confirmation is required before publishing or scheduling.")
+        status = body.get("status")
+        if not isinstance(status, str) or status not in {"published", "scheduled"}:
+            raise ApiError(400, "invalid_publication_status", "Choose published or scheduled.")
+        publication = self.get_transistor_publication(episode_id)
+        if publication is None or publication["status"] != "draft" or not publication.get("remote_episode_id"):
+            raise ApiError(409, "transistor_draft_required", "Refresh a confirmed Transistor draft before publishing or scheduling it.")
+        with self.connect() as db:
+            approved = db.execute("SELECT approval_status FROM files WHERE id=? AND episode_id=?",
+                                  (publication["file_id"], publication["episode_id"])).fetchone()
+        if approved is None or approved["approval_status"] != "approved":
+            raise ApiError(409, "audio_not_approved", "The selected local audio must remain explicitly approved before publication.")
+        published_at = None
+        if status == "scheduled":
+            value = body.get("published_at")
+            zone_name = publication.get("show_time_zone")
+            if not isinstance(value, str) or not zone_name:
+                raise ApiError(400, "invalid_schedule", "Choose a local publication date and time in the selected show's time zone.")
+            try:
+                from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+                from datetime import timedelta
+                naive = datetime.strptime(value, "%Y-%m-%dT%H:%M")
+                zone = ZoneInfo(zone_name)
+                first, second = naive.replace(tzinfo=zone, fold=0), naive.replace(tzinfo=zone, fold=1)
+                if first.utcoffset() != second.utcoffset():
+                    raise ValueError("ambiguous local time")
+                round_trip = first.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
+                if round_trip != naive or first <= datetime.now(zone) + timedelta(seconds=30):
+                    raise ValueError("invalid or past local time")
+                published_at = first.isoformat()
+            except (ValueError, KeyError, ZoneInfoNotFoundError):
+                raise ApiError(400, "invalid_schedule", "The scheduled time must be a future, unambiguous local time in the selected show's time zone.") from None
+        elif "published_at" in body and body["published_at"] not in (None, ""):
+            raise ApiError(400, "invalid_schedule", "A publication date is only accepted for scheduled episodes.")
+
+        # Read before the write to reconcile a previous request whose response may have been lost.
+        try:
+            remote = client.get_episode(publication["remote_episode_id"])
+        except TransistorError as exc:
+            status_code = 503 if exc.code == "not_configured" else 502
+            raise ApiError(status_code, "transistor_" + exc.code, exc.message) from None
+        if remote.get("status") != "draft":
+            remote_status = remote.get("status")
+            if remote_status in {"scheduled", "published"}:
+                self._set_transistor_state(episode_id, remote_status, published_at=remote.get("published_at"))
+            raise ApiError(409, "transistor_not_draft", "The Transistor episode is no longer a draft. Its current status was refreshed; no publication request was sent.")
+        try:
+            result = client.publish(publication["remote_episode_id"], status, published_at)
+        except TransistorError:
+            self._set_transistor_state(episode_id, "publish_uncertain")
+            raise ApiError(502, "transistor_publish_uncertain", "Transistor may have accepted the publication request. Refresh status before considering another action; this studio will not automatically retry.") from None
+        resulting_status = result.get("status")
+        if resulting_status not in {"published", "scheduled", "draft"}:
+            self._set_transistor_state(episode_id, "publish_uncertain")
+            raise ApiError(502, "transistor_publish_uncertain", "Transistor returned an unexpected status. Refresh before taking further action.")
+        self._set_transistor_state(episode_id, resulting_status, published_at=result.get("published_at", published_at))
+        return self.get_transistor_publication(episode_id)
+
     def review_file(self, file_id, body):
         if set(body) - {"status", "confirm_review"}:
             raise ApiError(400, "unknown_fields", "Unsupported audio-review fields.")
@@ -624,9 +797,10 @@ class Studio:
                 "published_episodes": by_status.get("Published", 0), "by_status": by_status, "recent_episodes": recent}
 
 
-def create_app(data_dir: str | Path | None = None, suggestion_provider=None):
-    """Return the WSGI app; optionally inject a provider for deterministic tests."""
+def create_app(data_dir: str | Path | None = None, suggestion_provider=None, transistor_client=None):
+    """Return the WSGI app; integrations can be injected for deterministic tests."""
     studio = Studio(data_dir or os.environ.get("STUDIO_DATA_DIR", "data"))
+    transistor = transistor_client if transistor_client is not None else TransistorClient()
 
     def json_response(start_response, status, value, headers=()):
         payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -666,6 +840,12 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None):
                 return json_response(start_response, 200, {"voices": studio.list_voices()})
             if path == "/api/voices" and method == "POST":
                 return json_response(start_response, 201, studio.register_voice(read_json(environ)))
+            if path == "/api/transistor/shows" and method == "GET":
+                try:
+                    return json_response(start_response, 200, {"shows": transistor.list_shows()})
+                except TransistorError as exc:
+                    status = 503 if exc.code == "not_configured" else 502
+                    raise ApiError(status, "transistor_" + exc.code, exc.message) from None
 
             parts = [part for part in path.split("/") if part]
             if len(parts) >= 3 and parts[:2] == ["api", "episodes"]:
@@ -731,6 +911,17 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None):
                                      "Audio file exceeds the 500 MiB limit.")
                     file = studio.store_file(episode_id, filename, environ.get("CONTENT_TYPE", ""), body)
                     return json_response(start_response, 201, file)
+                if len(parts) == 4 and parts[3] == "transistor" and method == "GET":
+                    return json_response(start_response, 200, {"publication": studio.get_transistor_publication(episode_id)})
+                if len(parts) == 5 and parts[3] == "transistor" and parts[4] == "draft" and method == "POST":
+                    return json_response(start_response, 201, {"publication": studio.create_transistor_draft(
+                        episode_id, read_json(environ), transistor)})
+                if len(parts) == 5 and parts[3] == "transistor" and parts[4] == "refresh" and method == "POST":
+                    return json_response(start_response, 200, {"publication": studio.refresh_transistor_publication(
+                        episode_id, transistor)})
+                if len(parts) == 5 and parts[3] == "transistor" and parts[4] == "publish" and method == "POST":
+                    return json_response(start_response, 200, {"publication": studio.publish_transistor_episode(
+                        episode_id, read_json(environ), transistor)})
             if len(parts) == 3 and parts[:2] == ["api", "voices"] and method == "GET":
                 return json_response(start_response, 200, studio.get_voice(parts[2]))
             if len(parts) == 4 and parts[:2] == ["api", "files"] and parts[3] == "review" and method == "POST":
