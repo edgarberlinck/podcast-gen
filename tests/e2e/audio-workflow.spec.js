@@ -108,11 +108,19 @@ async function approveLocalAudio(page, episodeId, filename, bytes) {
   return { ...record, approval_status: "approved" };
 }
 
-async function prepareInUi(page) {
+async function expectEpisodeNotGenerating(page, episodeId) {
+  const response = await page.request.get(`${baseURL}/api/episodes/${episodeId}`);
+  expect(response.status()).toBe(200);
+  const persistedEpisode = await response.json();
+  expect(persistedEpisode.status).not.toBe("Generating Audio");
+}
+
+async function prepareInUi(page, episodeId) {
   await page.getByRole("button", { name: "Prepare Codex handoff" }).click();
   await expect(page.getByRole("dialog", { name: "Prepare request for Codex?" })).toBeVisible();
   await page.getByRole("button", { name: "Yes, prepare local handoff" }).click();
   await expect(page.getByText("Awaiting your action in Codex").last()).toBeVisible();
+  await expectEpisodeNotGenerating(page, episodeId);
 }
 
 test.beforeAll(async () => {
@@ -173,8 +181,9 @@ test("cancelled handoff, safe failure status and invalid import remain local and
   await expect(page.getByRole("dialog", { name: "Prepare request for Codex?" })).toBeVisible();
   await page.getByRole("button", { name: "Back to review" }).click();
   expect((await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/generation-handoffs`)).json()).handoffs).toEqual([]);
+  await expectEpisodeNotGenerating(page, episode.id);
 
-  await prepareInUi(page);
+  await prepareInUi(page, episode.id);
   const failedHandoff = page.locator(".generation-handoff").first();
   await failedHandoff.locator("[data-handoff-failure]").selectOption("mcp_error");
   page.once("dialog", (dialog) => dialog.dismiss());
@@ -187,15 +196,17 @@ test("cancelled handoff, safe failure status and invalid import remain local and
   const listed = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/generation-handoffs`)).json()).handoffs;
   expect(listed[0]).toMatchObject({ status: "failed", failure_code: "mcp_error" });
   expect(JSON.stringify(listed)).not.toContain("provider trace");
+  await expectEpisodeNotGenerating(page, episode.id);
 
   // A distinct prepared handoff remains retryable after local file validation rejects a bad extension.
-  await prepareInUi(page);
+  await prepareInUi(page, episode.id);
   const active = page.locator('.generation-handoff:has([data-generation-file])').first();
   const handoffId = await active.locator("[data-generation-file]").getAttribute("data-generation-file");
   await active.locator("[data-generation-file]").setInputFiles({ name: "not-audio.txt", mimeType: "text/plain", buffer: Buffer.from("not audio") });
   await expect(active.locator(`[data-handoff-error="${handoffId}"]`)).toContainText("supported audio extension");
   const retryable = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/generation-handoffs`)).json()).handoffs;
   expect(retryable.find((item) => item.id === handoffId).status).toBe("prepared");
+  await expectEpisodeNotGenerating(page, episode.id);
   expect(externalRequests).toEqual([]);
 });
 
@@ -213,7 +224,7 @@ test("two local WAV imports remain playable/downloadable, review decisions retai
   });
 
   await page.goto(`${baseURL}/#generation/${episode.id}`);
-  await prepareInUi(page);
+  await prepareInUi(page, episode.id);
   let pendingHandoff = page.locator('.generation-handoff:has([data-generation-file])').first();
   let handoffId = await pendingHandoff.locator("[data-generation-file]").getAttribute("data-generation-file");
   const handoffHref = await pendingHandoff.getByRole("link", { name: "Download handoff JSON" }).getAttribute("href");
@@ -224,12 +235,14 @@ test("two local WAV imports remain playable/downloadable, review decisions retai
   expect(handoffData.model_preference.identifier).toBe("drama-3");
   await pendingHandoff.locator("[data-generation-file]").setInputFiles({ name: "take-one.wav", mimeType: "audio/wav", buffer: audioBytes });
   await expect(page.getByRole("status")).toContainText("Audio imported as a new local version");
+  await expectEpisodeNotGenerating(page, episode.id);
 
-  await prepareInUi(page);
+  await prepareInUi(page, episode.id);
   pendingHandoff = page.locator('.generation-handoff:has([data-generation-file])').first();
   handoffId = await pendingHandoff.locator("[data-generation-file]").getAttribute("data-generation-file");
   await pendingHandoff.locator("[data-generation-file]").setInputFiles({ name: "take-two.wav", mimeType: "audio/wav", buffer: oneSecondSilentWav() });
   await expect(page.getByRole("status")).toContainText("Audio imported as a new local version");
+  await expectEpisodeNotGenerating(page, episode.id);
 
   const records = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/files`)).json()).files;
   expect(records).toHaveLength(3);
@@ -258,16 +271,19 @@ test("two local WAV imports remain playable/downloadable, review decisions retai
   await page.locator(`[data-audio-version="${firstTake.id}"] [data-action="review-audio"][data-status="rejected"]`).click();
   await page.getByRole("button", { name: "Confirm review" }).click();
   await expect(page.locator(`[data-audio-version="${firstTake.id}"]`)).toContainText("Rejected · retained");
+  await expectEpisodeNotGenerating(page, episode.id);
 
   await page.locator(`[data-audio-version="${secondTake.id}"] [data-action="review-audio"][data-status="approved"]`).click();
   await page.getByRole("button", { name: "Confirm review" }).click();
   await expect(page.locator(`[data-audio-version="${secondTake.id}"]`)).toContainText("Approved · preserved");
+  await expectEpisodeNotGenerating(page, episode.id);
 
   await stopServer();
   await startServer();
   await page.reload();
   await expect(page.locator(`[data-audio-version="${firstTake.id}"]`)).toContainText("Rejected · retained");
   await expect(page.locator(`[data-audio-version="${secondTake.id}"]`)).toContainText("Approved · preserved");
+  await expectEpisodeNotGenerating(page, episode.id);
   const afterFiles = (await (await page.request.get(`${baseURL}/api/episodes/${episode.id}/files`)).json()).files;
   expect(afterFiles).toHaveLength(3);
   expect(afterFiles.find((item) => item.id === prior.id)).toMatchObject({
