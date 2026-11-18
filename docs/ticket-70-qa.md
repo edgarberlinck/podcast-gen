@@ -21,7 +21,9 @@ Existing regression coverage is retained and rerun rather than reimplemented:
 | Imported generations retain prior approved bytes/metadata and independent review | `audio-workflow.spec.js` local WAV imports and restart checks |
 | Upload differs from separately confirmed publish/schedule; pending/error/uncertain outcomes | `transistor-publishing.spec.js` intercepted APIs |
 
-## Known acceptance gap: consent selector does not match the delivered DOM
+## Historical pre-ticket-#71 finding: consent selector did not match the delivered DOM
+
+This section records the original ticket #70 baseline, before ticket #71 corrected the selector. It is retained as historical evidence; the gap described below is no longer the current result. The correction and its rerun results are recorded at the end of this document.
 
 At **both widths**, opening the delivered upload confirmation shows:
 
@@ -65,3 +67,32 @@ Results:
 ## Assumptions and limitations
 
 Representative layout and computed-style assertions, not pixel-perfect screenshot baselines; desktop/mobile viewport simulation in Chromium only, not real-device or cross-browser coverage. No full WCAG/contrast audit was performed. Media failure is deliberate in the new fixtures; playable real local WAV coverage remains in the existing audio suite. All provider evidence is mocked/faked: no LLM, Fish Audio, Codex MCP or Transistor requests, paid generation, external upload, publication or scheduling were performed. Local persistence evidence comes from existing temporary SQLite/WAV tests, not these in-memory visual fixtures. No QA deployment was made.
+
+## Ticket #71 correction and revalidation
+
+Ticket #71 replaced the ineffective descendant selector with `#transistor-upload-dialog .transistor-consent`. This scopes the `#242222` background, `#625D5D` border, and white copy to the actual upload confirmation dialog, whose consent label is a sibling of `.transistor-upload`. The two former `test.fail` diagnostics were removed. The existing real-rendered upload-dialog browser test now asserts computed consent background, border, and copy colors at both configured widths (1440×1000 and 390×844); upload/publish workflow behavior is unchanged.
+
+Exact commands run from the repository root and results:
+
+```sh
+npm ci
+npm run test:e2e -- tests/e2e/visual-refresh.spec.js
+npm test
+npm run test:e2e
+node --experimental-test-coverage --test tests/*.test.js
+python -m pytest --cov=. --cov-report=term
+python -m ruff check .
+node --check static/app.js
+node --check tests/e2e/visual-refresh.spec.js
+git diff --check
+```
+
+- `npm ci`: passed; 0 vulnerabilities.
+- Focused refresh Chromium suite: **8 passed**, including the computed consent background/border/copy assertions at both widths.
+- `npm test`: **28 passed**.
+- Full Playwright Chromium suite: **27 passed**, no expected failures.
+- Node unit-only coverage: **63.59%** overall, including tests; `static/app.js` **36.67%**, `static/api.js` **100%**. Browser execution is not included in this Node coverage measure; this is not an 80% frontend coverage result.
+- Python: **140 passed**, **94%** combined line coverage including tests (`app.py` 88%, `narration.py` 92%, `transistor.py` 83%).
+- Ruff, JavaScript syntax checks, and `git diff --check` passed. No npm lint/build scripts exist; the interface is served from static files.
+
+Assumption and evidence limits remain unchanged: representative computed-style/viewport checks, not screenshot baselines; local deterministic fixtures only; no LLM, Fish Audio, Codex MCP, Transistor, external upload/publication/scheduling, or paid generation. No QA deployment, WCAG/contrast audit, real-device evaluation, or cross-browser audit was performed.
