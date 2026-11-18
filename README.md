@@ -289,6 +289,7 @@ Ticket #60 checks from the repository root:
 npm ci
 npm test
 node --experimental-test-coverage --test tests/frontend_transistor.test.js
+node --experimental-test-coverage --test tests/*.test.js
 node --check static/app.js
 npm run test:e2e
 python -m pytest --cov=. --cov-report=term
@@ -297,6 +298,8 @@ git diff --check
 ```
 
 The focused Transistor UI tests verify approved-audio filtering/preview, separate consent-gated upload and draft-only behavior, local metadata edits, a required remote status read-back, separate publish and schedule confirmations, timezone-unavailable blocking, and visible status-refresh/configuration errors without retries. The focused test module's line coverage is measured separately; whole `static/app.js` contains legacy screens and is not represented by that focused percentage. No JavaScript lint or build script is configured.
+
+Ticket #60 results (2026-11-18): `npm ci` passed with 0 reported vulnerabilities; `npm test` passed 21 tests; `node --experimental-test-coverage --test tests/frontend_transistor.test.js` runs seven focused UI tests (100% test-file line coverage); the all-Node coverage run reports `static/app.js` 36.89% and `static/api.js` 100% (the monolithic app includes older screens, and V8 does not count code evaluated in jsdom's separate window; new UI behavior is exercised by the focused mocked jsdom tests and a real-browser E2E test); `npm run test:e2e` passed 16 Chromium tests; `python -m pytest --cov=. --cov-report=term` passed 140 tests at 94% combined coverage (`app.py` 88%, `transistor.py` 83%); `python -m ruff check .`, `node --check static/app.js`, and `git diff --check` passed. The added Playwright workflow starts the actual local app, but intercepts all API routes with deterministic local responses. UI/unit/E2E checks did not contact Transistor; no live show, credentials, audio upload, draft, publish, schedule, or RSS/distributor update was exercised.
 
 ## Phase 5 Transistor integration (ticket #59)
 

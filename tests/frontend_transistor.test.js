@@ -28,6 +28,10 @@ async function transistorStudio(t, initialPublication = null, options = {}) {
     transistorShows: async () => options.showsError ? Promise.reject(new Error("safe 503")) : ({ shows: [{ id: "show-1", title: "Code & Scars", time_zone: options.timeZone === false ? "" : "America/Sao_Paulo" }] }),
     createTransistorDraft: async (id, value, confirmed) => {
       calls.push(["draft", id, value, confirmed]);
+      if (options.createFailure) {
+        publication = { episode_id: id, file_id: value.file_id, show_id: value.show_id, remote_episode_id: options.createFailure === "uncertain" ? null : "", status: options.createFailure, show_title: "Code & Scars", title: episode.title, description: episode.description, summary: value.summary, keywords: value.keywords, show_time_zone: "America/Sao_Paulo", show_time_zone_supported: true };
+        throw new Error(options.createFailure === "upload_failed" ? "Safe upload failure" : "Draft creation could not be confirmed; inspect Transistor manually.");
+      }
       publication = { episode_id: id, file_id: value.file_id, show_id: value.show_id, remote_episode_id: "remote-1", status: "draft", show_title: "Code & Scars", title: episode.title, description: episode.description, summary: value.summary, keywords: value.keywords, show_time_zone: options.timeZone === false ? "" : "America/Sao_Paulo", show_time_zone_supported: options.timeZone !== false };
       return { publication };
     },
@@ -145,9 +149,26 @@ test("status refresh failure is visible and no automatic retry or publication oc
   doc.querySelector('[data-action="refresh-transistor"]').click();
   await tick();
   assert.equal(calls.filter(([kind]) => kind === "refresh").length, 1);
-  assert.match(doc.getElementById("transistor-operation-error").textContent, /Status refresh failed|Falha ao atualizar/);
-  assert.match(doc.getElementById("transistor-operation-error").textContent, /safe rate-limit response/);
+  assert.match(doc.getElementById("notice").textContent, /Status refresh failed|Falha ao atualizar/);
+  assert.match(doc.getElementById("notice").textContent, /safe rate-limit response/);
   assert.equal(calls.some(([kind]) => kind === "publish"), false);
+});
+
+test("upload failure keeps only a same-file retry while uncertain draft creation blocks retries", async (t) => {
+  const failed = await transistorStudio(t, null, { createFailure: "upload_failed" });
+  await uploadApprovedDraft(failed.doc, failed.calls);
+  assert.match(failed.doc.body.textContent, /Falha antes da criação do rascunho/);
+  assert.equal(failed.doc.querySelector('[data-action="open-transistor-upload"]').disabled, false);
+  assert.equal(failed.doc.querySelector("#transistor-show").disabled, true);
+  assert.equal(failed.doc.querySelector("#transistor-file").disabled, true);
+  assert.equal(failed.calls.filter(([kind]) => kind === "draft").length, 1);
+
+  const uncertain = await transistorStudio(t, null, { createFailure: "creation_uncertain" });
+  await uploadApprovedDraft(uncertain.doc, uncertain.calls);
+  assert.match(uncertain.doc.body.textContent, /Inspecione o Transistor manualmente/);
+  assert.equal(uncertain.doc.querySelector('[data-action="open-transistor-upload"]'), null);
+  assert.equal(uncertain.doc.querySelector('[data-action="refresh-transistor"]'), null);
+  assert.equal(uncertain.calls.filter(([kind]) => kind === "draft").length, 1);
 });
 
 test("show lookup errors are explicit, localized and disable the upload path", async (t) => {
