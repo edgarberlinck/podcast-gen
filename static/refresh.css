@@ -1,0 +1,147 @@
+/* Código & Cicatriz approved black, red and white visual refresh. */
+:root {
+  color-scheme: light;
+  --green: #111111;
+  --green-2: #2A1719;
+  --coral: #B51222;
+  --paper: #F5F4F2;
+  --ink: #292525;
+  --muted: #625D5D;
+  --line: #DED9D9;
+  --white: #FFFFFF;
+  --gold: #704A0C;
+  font-family: "DM Sans", Arial, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+body { background: var(--paper); color: var(--ink); }
+.sidebar { width: 240px; background: #111111; color: #FFFFFF; padding: 28px 16px 24px; }
+.brand { color: #FFFFFF; gap: 12px; letter-spacing: .04em; }
+.brand-mark { width: 42px; height: 42px; background: #B51222; color: #FFFFFF; border-radius: 10px; }
+.sidebar-kicker { color: #E4767E; margin: 28px 12px 23px; }
+.primary-nav a { color: #D0CDCD; border-radius: 9px; }
+.primary-nav a:hover, .primary-nav a[aria-current=page] { background: #2A1719; color: #FFFFFF; }
+.local-note { background: #1E1E1E; color: #E8E5E5; border-radius: 12px; }
+.local-note strong { color: #FFB6BC; }
+.local-dot { background: #B51222; }
+.sidebar-footer { color: #AAA5A5; }
+.main-content { max-width: 1600px; }
+.topbar { color: #625D5D; }
+.local-badge { background: #FFFFFF; color: #424040; border: 1px solid #DED9D9; }
+.local-badge span { color: #B51222; }
+.page-heading h1 { color: #111111; }
+.page-heading p, .workflow-subtitle, .metric-foot, .episode-meta p { color: #5D5858; }
+.button { background: #111111; }
+.button.primary { background: #B51222; }
+.button.secondary { color: #292525; border-color: #DED9D9; }
+.button.subtle { color: #111111; border-color: #DED9D9; }
+.button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible,
+.source-paragraph:focus-visible { outline: 3px solid #B51222; outline-offset: 3px; }
+.metrics, .activity-panel, .panel, .workflow-card, .episode-row, .voice-card,
+.continue-card, .version-card, .approval-comparison, .script-steps, .version-summary,
+.transistor-steps, .transistor-status, .transistor-show, .transistor-metadata,
+.transistor-upload, .transistor-next { box-shadow: 0 2px 8px rgb(17 17 17 / 4%); }
+.metrics { border: 1px solid #E8E3E3; border-radius: 14px; }
+.metric-label, .eyebrow { color: #625D5D; }
+.metric-value, .section-title h2, .panel h2, .workflow-title, .episode-meta h3,
+.workflow-card h3, .row-title, .voice-card h3, .transistor-show h2,
+.transistor-metadata h2, .transistor-upload h2, .transistor-next h2,
+.transistor-status h2 { color: #111111; }
+.metric:nth-child(3) .metric-value { color: #B51222; }
+.section-title { margin-bottom: 16px; }
+.text-link, .row-open, .generation-handoff a, .audio-version > a { color: #A80F1D; }
+.continue-card { background: #FFFFFF; border: 1px solid #E8E3E3; border-radius: 14px; }
+.cover-art { background: linear-gradient(145deg, #B51222, #2A1719 65%, #111111); }
+.episode-meta .eyebrow, .workflow-card .eyebrow, .version-header .eyebrow,
+.transistor-metadata header .eyebrow { color: #A80F1D; }
+.activity-panel, .panel, .workflow-card, .episode-row, .voice-card,
+.version-card, .approval-comparison, .continue-card { border-color: #E8E3E3; }
+.activity-list li { color: #454141; }
+.activity-list li::before { width: 3px; height: 36px; border-radius: 2px; background: #B51222; }
+.activity-list time, .activity-hint, .muted, .field-help { color: #625D5D; }
+.workflow-card:last-child { background: #FFF8F8; border-color: #E9D4D6; }
+.workflow-card .step-status { color: #315D48; }
+.info-strip { background: #FFF0F1; color: #612F32; }
+.field, input, select, textarea { color: #292525; border-color: #DED9D9; background: #FAF9F8; }
+.form-field label, .transistor-show label, .transistor-metadata > label,
+.transistor-extra-metadata label, .transistor-audio label, .transistor-date-field label { color: #292525; }
+.table-head { background: #E8E3E3; color: #514B4B; }
+.status-chip { background: #F1F0EE; color: #514B4B; }
+.status-chip.review { background: #E8F1EA; color: #315D48; }
+.status-chip.draft, .status-chip.ready { background: #FFF2D8; color: #704A0C; }
+.empty-state, .error-state { background: #FFFFFF; }
+.empty-state h2 { color: #111111; }
+.error-state, .notice.error, .generation-error[role="alert"]:not(:empty) { border-color: #F0CDD0; background: #FFF8F8; color: #73131D; }
+.editor-wrap, .editor-wrap textarea { background: #FFFFFF; border-color: #DED9D9; }
+.version-header { background: #FFF8F8; }
+.version-card.narration .version-header, .suggestion-compare > div { background: #FAF9F8; }
+.version-card.fish .version-header { background: #FFF0F1; }
+.version-card.narration .eyebrow, .suggestion-compare label { color: #A80F1D; }
+.version-card.fish .eyebrow { color: #704A0C; }
+.voice-initial { background: #B51222; color: #FFFFFF; }
+.tag { background: #F1F0EE; color: #424040; }
+.helper-card, .fish-review, .fish-next-step { background: #FFFFFF; border-color: #E9D4D6; }
+.helper-card h3, .fish-review header h2, .fish-next-step h2 { color: #111111; }
+.helper-card p, .fish-review header p { color: #514B4B; }
+.editorial-safety { background: #FFF0F1; border-color: #F0CDD0; color: #73131D; }
+.editorial-safety p { color: #612F32; }
+.script-steps { color: #625D5D; }
+.script-steps span[aria-current="step"], .transistor-steps span[aria-current="step"] { color: #A80F1D; }
+.source-paragraph { color: #383434; border-color: #E9D4D6; background: #FFFFFF; }
+.source-paragraph span:first-child, .suggestion-compare article > span { color: #A80F1D; }
+.source-paragraph[aria-pressed="true"], .scope-option:has(input:checked) { background: #FFF0F1; border-color: #F0CDD0; box-shadow: inset 3px 0 #B51222; }
+.scope-option { background: #FAF9F8; border-color: #DED9D9; }
+.scope-option input, .transistor-publish-options input[type="radio"], .transistor-consent input { accent-color: #B51222; }
+#suggestion-status { color: #514B4B; }
+#suggestion-status[aria-busy="true"] { background: #FFF0F1; }
+.suggestion-empty { background: #FAF9F8; color: #514B4B; }
+.suggestion-compare article { background: #FFF8F8; border-color: #E9D4D6; }
+.suggestion-compare p { color: #383434; }
+.fish-review { border-color: #E9D4D6; }
+.fish-review header h2 { color: #111111; }
+.fish-approval-state.pending, .model-caveat, .timezone-note { background: #FFF2D8; color: #704A0C; }
+.fish-approval-state.approved, .notice.success, .approved-lock { background: #E8F1EA; color: #315D48; }
+.approval-dialog { background: #FFFFFF; color: #292525; }
+.approval-dialog h2 { color: #111111; }
+.approval-dialog::backdrop { background: rgb(17 17 17 / 72%); }
+.generation-handoff { background: #111111; border-color: #111111; color: #FFFFFF; }
+.generation-handoff > strong, .generation-handoff > span, .generation-handoff p,
+.generation-handoff label { color: #FFFFFF; }
+.generation-handoff a { color: #FFB6BC; }
+.generation-handoff select { background: #242222; border-color: #625D5D; color: #FFFFFF; }
+.generation-handoff .button { background: #B51222; border-color: #B51222; color: #FFFFFF; }
+.audio-version { background: #FFFFFF; border-color: #DED9D9; }
+.audio-version p, .audio-version code { color: #514B4B; }
+.audio-provenance { background: #FAF9F8; }
+.audio-version:focus-within { border-color: #B51222; }
+.transistor-steps { background: #FFFFFF; }
+.transistor-steps span { color: #625D5D; }
+.transistor-show, .transistor-metadata, .transistor-status { border-color: #DED9D9; }
+.transistor-show .read-badge { background: #E8F1EA; color: #315D48; }
+.transistor-metadata header { background: #FFF8F8; }
+.transistor-audio { background: #FFF8F8; border-color: #E9D4D6; }
+.transistor-upload { background: #111111; border-color: #111111; color: #FFFFFF; }
+.transistor-upload .eyebrow { color: #FFB6BC; }
+.transistor-upload h2, .transistor-upload > p { color: #FFFFFF; }
+.transistor-upload .upload-recap { background: #242222; color: #FFFFFF; }
+.transistor-upload .upload-recap span { color: #FFFFFF; }
+.transistor-upload .transistor-error { color: #FFB6BC; }
+.transistor-upload .field-help { color: #E0DADA; }
+.transistor-upload > .button.primary { background: #B51222; border-color: #B51222; color: #FFFFFF; }
+.upload-recap { background: #FFF8F8; color: #73131D; }
+.transistor-status-chip { background: #FFF2D8; color: #704A0C; }
+.transistor-status-chip.published { background: #E8F1EA; color: #315D48; }
+.transistor-status-chip.scheduled { background: #F1F0EE; color: #424040; }
+.transistor-status-chip.creation_uncertain, .transistor-status-chip.publish_uncertain,
+.transistor-status-chip.upload_failed { background: #FFF0F1; color: #73131D; }
+.transistor-publish-options > label, .transistor-date-field { background: #FAF9F8; border-color: #DED9D9; }
+.transistor-upload .transistor-consent { background: #242222; border-color: #625D5D; color: #FFFFFF; }
+.transistor-footer { color: #625D5D; }
+@media (max-width: 720px) {
+  .sidebar { width: 100%; }
+  .primary-nav a[aria-current="page"]::after { background: #B51222; }
+  .main-content { padding-inline: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}

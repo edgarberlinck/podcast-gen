@@ -351,3 +351,22 @@ node --check static/app.js
 ```
 
 The mocked tests cover secret/header boundaries, approved audio gating, upload retries, duplicate prevention, uncertain remote outcomes, explicit publish/schedule confirmation, show-time-zone validation, status refresh, and browser confirmation state. They make no network calls to Transistor. Local test data and placeholder audio are not live vendor evidence.
+
+## Ticket #69 visual refresh
+
+The shared stylesheet `static/refresh.css` layers the approved black/red/white palette and dashboard, editorial, audio, and publishing surface styling over the existing UI. The Codex handoff and Transistor upload confirmation cards use the prototype's near-black surface, white copy, and red actions; the upload card's nested consent surface is also dark (`#242222`) with white copy. It preserves current screen markup, copy, navigation, responsive breakpoints, and workflow actions; the stylesheet and theme-color metadata are presentation-only. Design source: the approved [Penpot prototype](http://localhost:9001/#/view?file-id=f9d04d4b-f026-80f2-8008-f6b1cc62087b&page-id=f9d04d4b-f026-80f2-8008-f6b1cc62087c&section=interactions&index=0&share-id=c1ffd952-2c27-451e-8c0b-d4866f5a2d70).
+
+Implementation assumptions: use a separate cascade stylesheet rather than changing screen templates or workflows; retain semantic green for confirmed/approved states and amber for pending states, while using red for brand and editorial safety surfaces. Existing component layout and screen copy remain authoritative where prototype copy is illustrative. The existing UI has no distinct metric for pending audio approvals or event activity, so this refresh does not invent either.
+
+Exact local checks from the repository root:
+
+```sh
+npm ci
+npm test
+npm run test:e2e
+python -m pytest --cov=. --cov-report=term
+python -m ruff check .
+node --check static/app.js
+```
+
+Ticket #69 results: `npm ci` passed with 0 vulnerabilities; Node tests passed after implementation (28 total, including 4 visual-refresh stylesheet checks); Playwright Chromium passed 19 tests; Python passed 140 tests at 94% combined coverage (`app.py` 88%, `narration.py` 92%, `transistor.py` 83%); Ruff and JavaScript syntax checks passed. Browser E2E uses deterministic local fixtures/intercepts for external integration behavior; it does not call Fish Audio, Codex MCP, LLM providers, or Transistor and does not upload, publish, schedule, or trigger paid generation. These checks do not constitute a full WCAG or cross-browser audit.
