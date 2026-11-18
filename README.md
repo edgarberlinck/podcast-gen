@@ -107,6 +107,27 @@ git diff --check
 
 Recorded results: `npm test` passed 13 Node tests; measured `static/app.js` unit line coverage was 44.33%, below the 80% project target for the entire legacy UI file. The focused generation behavior is also covered by the local Chromium workflow, which exercises the rendered UI. Python passed 126 tests at 90% combined coverage (`app.py` 89%, `narration.py` 92%); Ruff passed. Playwright Chromium passed 12 tests, including the responsive manual handoff/import/review flow. All fake-imported audio is test bytes, not playable vendor output. No Fish MCP/Codex call, paid generation, live LLM, audio codec validation, Transistor, or publishing was exercised. The checks are local only; full WCAG and cross-browser review remain outstanding.
 
+### Post-merge QA revalidation (2026-11-18)
+
+The conflict-resolution checkout `task-56-veronika` already contained merged PR #9 at `6e9f4f8`: `git status` was clean, `git ls-files -u` was empty, and no `MERGE_HEAD` existed. No source resolution was necessary. Assumption: preserve the already-approved implementation; the approved review contains no requested changes.
+
+Checks rerun from the repository root:
+
+```sh
+python -m pytest --cov=. --cov-report=term
+python -m ruff check .
+npm ci
+npm test
+node --experimental-test-coverage --test tests/*.test.js
+node --check static/api.js
+node --check static/app.js
+node --check tests/e2e/core-workflows.spec.js
+npm run test:e2e
+git diff --check
+```
+
+Results: 126 Python tests, 13 Node tests, and 12 Chromium E2E tests passed. Python coverage was 95% including tests (`app.py` 89%, `narration.py` 92%); JavaScript unit line coverage was 100% for `api.js` and 44.53% for `app.js`, still below the 80% target. Ruff and syntax checks passed; npm reported zero vulnerabilities. There are no npm lint/build scripts and no UI build step. Tests used local deterministic fixtures, with no live MCP/provider call, paid generation, deployment, or publishing. Cross-browser and full WCAG checks remain unverified.
+
 ## Fish Audio workflow boundary (Phase 4, user-mediated)
 
 The local studio implements a manual Codex handoff and local audio import only. It never starts generation, invokes Codex, connects to Fish Audio/MCP, calls the Fish REST API, or publishes. Starting audio generation requires a separate explicit user action in the authenticated Codex session after the user inspects the actual MCP tool schema. This environment did not expose a live MCP connection or schema, so no MCP tool names/arguments are assumed.
