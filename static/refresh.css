@@ -135,7 +135,7 @@ body { background: var(--paper); color: var(--ink); }
 .transistor-status-chip.creation_uncertain, .transistor-status-chip.publish_uncertain,
 .transistor-status-chip.upload_failed { background: #FFF0F1; color: #73131D; }
 .transistor-publish-options > label, .transistor-date-field { background: #FAF9F8; border-color: #DED9D9; }
-.transistor-consent { border-color: #E9D4D6; }
+.transistor-upload .transistor-consent { background: #242222; border-color: #625D5D; color: #FFFFFF; }
 .transistor-footer { color: #625D5D; }
 @media (max-width: 720px) {
   .sidebar { width: 100%; }

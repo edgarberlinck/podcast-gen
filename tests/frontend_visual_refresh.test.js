@@ -34,5 +34,6 @@ test("Codex handoff and Transistor upload confirmations use dark panels with rea
   assert.match(css, /\.generation-handoff \.button\s*\{[^}]*background:\s*#B51222[^}]*color:\s*#FFFFFF/is);
   assert.match(css, /\.transistor-upload\s*\{[^}]*background:\s*#111111[^}]*color:\s*#FFFFFF/is);
   assert.match(css, /\.transistor-upload \.upload-recap\s*\{[^}]*background:\s*#242222[^}]*color:\s*#FFFFFF/is);
+  assert.match(css, /\.transistor-upload \.transistor-consent\s*\{[^}]*background:\s*#242222[^}]*color:\s*#FFFFFF/is);
   assert.match(css, /\.transistor-upload > \.button\.primary\s*\{[^}]*background:\s*#B51222[^}]*color:\s*#FFFFFF/is);
 });
