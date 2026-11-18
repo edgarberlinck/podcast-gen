@@ -104,8 +104,14 @@ body { background: var(--paper); color: var(--ink); }
 .approval-dialog { background: #FFFFFF; color: #292525; }
 .approval-dialog h2 { color: #111111; }
 .approval-dialog::backdrop { background: rgb(17 17 17 / 72%); }
-.generation-handoff, .audio-version { background: #FFFFFF; border-color: #DED9D9; }
-.generation-handoff > span, .audio-version p, .audio-version code { color: #514B4B; }
+.generation-handoff { background: #111111; border-color: #111111; color: #FFFFFF; }
+.generation-handoff > strong, .generation-handoff > span, .generation-handoff p,
+.generation-handoff label { color: #FFFFFF; }
+.generation-handoff a { color: #FFB6BC; }
+.generation-handoff select { background: #242222; border-color: #625D5D; color: #FFFFFF; }
+.generation-handoff .button { background: #B51222; border-color: #B51222; color: #FFFFFF; }
+.audio-version { background: #FFFFFF; border-color: #DED9D9; }
+.audio-version p, .audio-version code { color: #514B4B; }
 .audio-provenance { background: #FAF9F8; }
 .audio-version:focus-within { border-color: #B51222; }
 .transistor-steps { background: #FFFFFF; }
@@ -114,7 +120,14 @@ body { background: var(--paper); color: var(--ink); }
 .transistor-show .read-badge { background: #E8F1EA; color: #315D48; }
 .transistor-metadata header { background: #FFF8F8; }
 .transistor-audio { background: #FFF8F8; border-color: #E9D4D6; }
-.transistor-upload { background: #FFFFFF; border-color: #E9D4D6; }
+.transistor-upload { background: #111111; border-color: #111111; color: #FFFFFF; }
+.transistor-upload .eyebrow { color: #FFB6BC; }
+.transistor-upload h2, .transistor-upload > p { color: #FFFFFF; }
+.transistor-upload .upload-recap { background: #242222; color: #FFFFFF; }
+.transistor-upload .upload-recap span { color: #FFFFFF; }
+.transistor-upload .transistor-error { color: #FFB6BC; }
+.transistor-upload .field-help { color: #E0DADA; }
+.transistor-upload > .button.primary { background: #B51222; border-color: #B51222; color: #FFFFFF; }
 .upload-recap { background: #FFF8F8; color: #73131D; }
 .transistor-status-chip { background: #FFF2D8; color: #704A0C; }
 .transistor-status-chip.published { background: #E8F1EA; color: #315D48; }

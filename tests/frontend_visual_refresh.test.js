@@ -27,3 +27,12 @@ test("editorial safety and approval states remain visually distinct", () => {
   assert.match(css, /\.fish-approval-state\.approved, \.notice\.success, \.approved-lock \{ background: #E8F1EA; color: #315D48; \}/);
   assert.match(css, /\.transistor-status-chip\.published\s*\{[^}]*background:\s*#E8F1EA/is);
 });
+
+test("Codex handoff and Transistor upload confirmations use dark panels with readable red actions", () => {
+  assert.match(css, /\.generation-handoff\s*\{[^}]*background:\s*#111111[^}]*color:\s*#FFFFFF/is);
+  assert.match(css, /\.generation-handoff > strong, \.generation-handoff > span, \.generation-handoff p,[\s\S]*?color:\s*#FFFFFF/);
+  assert.match(css, /\.generation-handoff \.button\s*\{[^}]*background:\s*#B51222[^}]*color:\s*#FFFFFF/is);
+  assert.match(css, /\.transistor-upload\s*\{[^}]*background:\s*#111111[^}]*color:\s*#FFFFFF/is);
+  assert.match(css, /\.transistor-upload \.upload-recap\s*\{[^}]*background:\s*#242222[^}]*color:\s*#FFFFFF/is);
+  assert.match(css, /\.transistor-upload > \.button\.primary\s*\{[^}]*background:\s*#B51222[^}]*color:\s*#FFFFFF/is);
+});
