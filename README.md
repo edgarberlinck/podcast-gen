@@ -83,6 +83,14 @@ Maximum JSON body is 2 MiB. Maximum audio file size is 500 MiB. Supported extens
 
 The responsive studio and Phase 3 narration-review UI are served by the same local-only Python server. Start it with `python app.py`, then open `http://127.0.0.1:8000/`. Keep it bound to loopback; the API has no authentication and is not intended to be exposed to a network. The interface assets are local files in `static/` and require no JavaScript packages, build step, external fonts, or cloud services.
 
+## Phase 4 audio generation and review interface
+
+The generation screen presents the exact saved, approved Fish Audio script, its approval time/digest, and a registered voice selection that is persisted only after the user saves it. It displays the documented Drama 3 preference (`drama-3`) but does not offer extra parameters because the actual MCP schema and model-selector support remain unverified. Preparing a handoff requires explicit confirmation and only creates a local snapshot; any paid Fish operation still requires the user to inspect and separately confirm the request in Codex. The language switch changes interface copy only, not episode content language.
+
+The local audio history retains each import, shows voice/model/import timestamp and the native player's duration when browser metadata is available, and provides playback and download controls. New imported takes remain pending until an explicit approve/reject confirmation. Approved and rejected files stay in history; a fresh import gets its own generation directory and cannot replace an approved recording. The UI displays the intended handoff provenance but cannot prove what a user-run Codex operation actually synthesized. Audio bytes in automated UI tests are deterministic placeholders, not playable Fish Audio output.
+
+UI assumptions: unknown duration is shown as unavailable rather than estimated; no new generation parameters are inferred from the REST API; review confirmations are local-only and never publish/upload; unknown live MCP/schema errors are represented with safe local guidance rather than vendor traces. The tests use fake local API responses for frontend state and do not call Fish Audio or Transistor.
+
 ## Fish Audio workflow boundary (Phase 4, user-mediated)
 
 The local studio implements a manual Codex handoff and local audio import only. It never starts generation, invokes Codex, connects to Fish Audio/MCP, calls the Fish REST API, or publishes. Starting audio generation requires a separate explicit user action in the authenticated Codex session after the user inspects the actual MCP tool schema. This environment did not expose a live MCP connection or schema, so no MCP tool names/arguments are assumed.
