@@ -15,17 +15,26 @@
   let listFilters = { search: "", status: "", language: "" };
   let scriptReview = null;
   let interfaceLanguage = null;
+  let generationLanguage = null;
+  let pendingAudioReview = null;
 
   const h = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const langName = (code) => code === "en" ? "English" : "Português (Brasil)";
   const langShort = (code) => code === "en" ? "EN" : "PT-BR";
   const languageSelect = (selected) => `<select id="episode-language" aria-label="Idioma do conteúdo" required><option value="pt" ${selected === "pt" ? "selected" : ""}>Português (Brasil)</option><option value="en" ${selected === "en" ? "selected" : ""}>English</option></select>`;
   const statusOptions = (selected, includeAll = false) => `${includeAll ? '<option value="">Todos os status</option>' : ""}${statuses.map((status) => `<option value="${h(status)}" ${status === selected ? "selected" : ""}>${h(status)}</option>`).join("")}`;
-  const dateLabel = (stamp) => {
+  const dateLabel = (stamp, locale = "pt-BR") => {
     if (!stamp) return "";
     const date = new Date(stamp);
     if (Number.isNaN(date.getTime())) return "";
-    return new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" }).format(date);
+    return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  };
+  const formatAudioDuration = (seconds) => {
+    const duration = Math.floor(seconds);
+    const hours = Math.floor(duration / 3600);
+    const minutes = Math.floor((duration % 3600) / 60);
+    const remaining = duration % 60;
+    return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}` : `${minutes}:${String(remaining).padStart(2, "0")}`;
   };
   const statusClass = (status) => status === "Draft" ? "draft" : ["Script Review", "Audio Review"].includes(status) ? "review" : ["Ready for Generation", "Approved"].includes(status) ? "ready" : "";
   const articleStats = (text) => {
@@ -387,46 +396,72 @@
       api.episode(id), api.generationHandoffs(id), api.episodeFiles(id), api.voices(),
     ]);
     if (requestId !== pageRequest) return;
-    const english = episode.language === "en";
-    setShellLanguage(episode.language);
-    const voice = (voiceResult.voices || []).find((item) => item.id === episode.selected_voice_id);
+    generationLanguage = generationLanguage || interfaceLanguage || episode.language;
+    const english = generationLanguage === "en";
+    setShellLanguage(generationLanguage);
+    document.documentElement.lang = english ? "en" : "pt-BR";
+    document.getElementById("breadcrumb").textContent = english ? "Studio / Episodes / Generate and review audio" : "Estúdio / Episódios / Gerar e revisar áudio";
+    currentVoices = voiceResult.voices || [];
+    const voice = currentVoices.find((item) => item.id === episode.selected_voice_id);
+    const matchingVoices = currentVoices.filter((item) => item.language === episode.language);
     const approved = !!episode.fish_audio_approved_sha256 && !!episode.fish_audio_script.trim();
     const handoffs = handoffResult.handoffs || [];
     const files = fileResult.files || [];
     const labels = english ? {
-      title: "Prepare and review audio", intro: "Manual Codex handoff · local audio import · no automatic provider calls.",
+      title: "Prepare and review audio", intro: "Manual Codex handoff · local audio import · no automatic provider calls.", locale: "Interface language", handoffStep: "Codex handoff",
       safety: "Generation starts only after your separate confirmation in Codex.", safetyCopy: "This studio does not connect to Fish Audio, guess MCP arguments, or replace an existing version.",
-      script: "Exact approved Fish Audio script", voice: "Selected registered voice", model: "Model preference",
+      script: "Exact approved Fish Audio script", voice: "Registered voice", saveVoice: "Save voice selection", model: "Model preference",
       notReady: "Approve the saved Fish Audio script and select an available registered voice before preparing a handoff.",
       prepare: "Prepare Codex handoff →", confirm: "Prepare a local handoff for this exact approved script and selected voice? No audio will be generated here.",
-      handoffs: "Handoff status", history: "Audio versions", empty: "No local audio versions yet.",
+      handoffs: "Handoff status", history: "Audio versions", empty: "No local audio versions yet.", duration: "Duration", durationPending: "Loading duration…", durationUnknown: "Duration unavailable",
+      approved: "Approved · preserved", rejected: "Rejected · retained", pendingReview: "Awaiting review", version: "Version", generated: "Imported", file: "File", download: "Download audio", playUnsupported: "Audio playback is not supported by this browser.",
       import: "Import the audio file returned by your manual Codex workflow", choose: "Choose audio file", importButton: "Import as a new version",
       manual: "In Codex, inspect the actual Fish Audio MCP schema and use only its documented fields. Confirm generation explicitly in Codex. The configured MCP connection and model selector are not verified here.",
       failure: "Record a Codex/MCP failure", recordFailure: "Record failure", pending: "Awaiting your action in Codex", imported: "Audio imported · a separate local version was created", failed: "Handoff failed", noMcp: "No MCP call or generation was started by this studio.",
+      review: "Review audio version", approve: "Approve this audio version?", reject: "Reject this audio version? The local file will remain preserved.", confirmReview: "Confirm review", cancelReview: "Keep listening", preserve: "Other versions remain unchanged. This does not publish or upload the episode.",
+      voiceNone: "No voice selected", voiceUnavailable: "Selected voice is not marked available", scriptApproval: "Script approval", uploadInfo: "The imported file is associated with the approved script and selected voice from this handoff. This studio cannot verify what the Codex operation actually synthesized.", confirmHandoff: "Prepare request for Codex?", cancelHandoff: "Back to review", yesHandoff: "Yes, prepare local handoff", handoffConfirmCopy: "This saves a local snapshot only. No audio is generated here. In Codex, check its live tool schema and confirm any paid generation separately.", generationHelp: "No audio starts here. You must separately review and confirm any generation in Codex.",
     } : {
-      title: "Preparar e revisar áudio", intro: "Handoff manual no Codex · importação local · nenhuma chamada automática ao provedor.",
+      title: "Preparar e revisar áudio", intro: "Handoff manual no Codex · importação local · nenhuma chamada automática ao provedor.", locale: "Idioma da interface", handoffStep: "Handoff no Codex",
       safety: "A geração só começa após sua confirmação separada no Codex.", safetyCopy: "Este estúdio não se conecta ao Fish Audio, não presume argumentos MCP e não substitui versões existentes.",
-      script: "Script Fish Audio exato aprovado", voice: "Voz registrada selecionada", model: "Preferência de modelo",
+      script: "Script Fish Audio exato aprovado", voice: "Voz registrada", saveVoice: "Salvar seleção de voz", model: "Preferência de modelo",
       notReady: "Aprove o script Fish Audio salvo e selecione uma voz registrada disponível antes de preparar o handoff.",
       prepare: "Preparar handoff no Codex →", confirm: "Preparar um handoff local para este script aprovado e esta voz? Nenhum áudio será gerado aqui.",
-      handoffs: "Status dos handoffs", history: "Versões de áudio", empty: "Ainda não há versões de áudio locais.",
+      handoffs: "Status dos handoffs", history: "Versões de áudio", empty: "Ainda não há versões de áudio locais.", duration: "Duração", durationPending: "Carregando duração…", durationUnknown: "Duração indisponível",
+      approved: "Aprovada · preservada", rejected: "Rejeitada · mantida", pendingReview: "Aguardando revisão", version: "Versão", generated: "Importada", file: "Arquivo", download: "Baixar áudio", playUnsupported: "Este navegador não oferece suporte à reprodução de áudio.",
       import: "Importe o arquivo de áudio obtido pelo fluxo manual no Codex", choose: "Escolher arquivo de áudio", importButton: "Importar como nova versão",
       manual: "No Codex, inspecione o esquema real do Fish Audio MCP e use somente campos documentados. Confirme a geração explicitamente no Codex. A conexão MCP e o seletor de modelo não foram verificados aqui.",
       failure: "Registrar uma falha do Codex/MCP", recordFailure: "Registrar falha", pending: "Aguardando sua ação no Codex", imported: "Áudio importado · uma nova versão local foi criada", failed: "Handoff falhou", noMcp: "Este estúdio não iniciou chamada MCP nem geração.",
+      review: "Revisar versão de áudio", approve: "Aprovar esta versão de áudio?", reject: "Rejeitar esta versão de áudio? O arquivo local será preservado.", confirmReview: "Confirmar revisão", cancelReview: "Continuar ouvindo", preserve: "As outras versões permanecem inalteradas. Isto não publica nem envia o episódio.",
+      voiceNone: "Nenhuma voz selecionada", voiceUnavailable: "A voz selecionada não está marcada como disponível", scriptApproval: "Aprovação do script", uploadInfo: "O arquivo importado é associado ao script aprovado e à voz selecionada neste handoff. Este estúdio não pode verificar o que a operação no Codex realmente sintetizou.", confirmHandoff: "Preparar solicitação para o Codex?", cancelHandoff: "Voltar à revisão", yesHandoff: "Sim, preparar handoff local", handoffConfirmCopy: "Isto salva apenas um snapshot local. Nenhum áudio é gerado aqui. No Codex, confira o esquema ativo e confirme qualquer geração paga separadamente.", generationHelp: "Nenhum áudio começa aqui. Você deve revisar e confirmar qualquer geração separadamente no Codex.",
     };
     const statusText = (status) => status === "prepared" ? labels.pending : status === "imported" ? labels.imported : labels.failed;
-    const handoffRows = handoffs.length ? handoffs.map((item) => `<article class="generation-handoff"><strong>${h(statusText(item.status))}</strong><span>${h(item.voice_name)} · ${h(item.model)} · ${h(dateLabel(item.created_at))}</span>${item.failure_code ? `<small>${h(item.failure_code)}</small>` : ""}${item.status === "prepared" ? `<label>${h(labels.failure)} <select data-handoff-failure="${h(item.id)}"><option value="mcp_error">MCP error</option><option value="cancelled">Cancelled</option><option value="output_unavailable">Output unavailable</option><option value="other">Other</option></select></label><button class="button secondary small" data-action="record-handoff-failure" data-id="${h(item.id)}">${h(labels.recordFailure)}</button><div class="generation-error" data-handoff-error="${h(item.id)}" role="alert"></div><p>${h(labels.manual)}</p><a download="codex-handoff-${h(item.id)}.json" href="data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify({ handoff_id: item.id, script: item.script, script_sha256: item.script_sha256, voice: { display_name: item.voice_name, fish_audio_id: item.fish_audio_id }, model_preference: { label: FISH_AUDIO_MODEL_LABEL, identifier: item.model }, instructions: labels.manual }, null, 2))}">Download handoff JSON</a><label>${h(labels.import)}<input type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,audio/*" data-generation-file="${h(item.id)}"></label>` : ""}</article>`).join("") : `<p>${h(labels.empty)}</p>`;
-    const history = files.length ? files.map((item, index) => `<article class="audio-version"><div><strong>Version ${files.length - index} · ${h(item.approval_status || "pending")}</strong><span>${h(item.voice_name || (item.fish_audio_id ? item.fish_audio_id : "Local audio import"))} ${item.model ? `· ${h(item.model)}` : ""} · ${h(dateLabel(item.created_at))}</span><span>${h(item.filename)} · ${Number(item.size_bytes).toLocaleString()} bytes</span>${item.script_sha256 ? `<code>Script SHA-256 · ${h(item.script_sha256)}</code>` : ""}</div><audio controls preload="none" src="/api/files/${encodeURIComponent(item.id)}">Audio playback is not supported by this browser.</audio><a href="/api/files/${encodeURIComponent(item.id)}">Download audio</a>${item.handoff_id && item.approval_status !== "approved" ? `<div class="audio-review-actions"><button class="button secondary small" data-action="review-audio" data-id="${h(item.id)}" data-status="rejected">${english ? "Reject" : "Rejeitar versão"}</button><button class="button small" data-action="review-audio" data-id="${h(item.id)}" data-status="approved">${english ? "Approve version" : "Aprovar versão"}</button></div>` : item.approval_status === "approved" ? `<strong>🔒 ${english ? "Approved · preserved" : "Aprovada · preservada"}</strong>` : ""}</article>`).join("") : `<p>${h(labels.empty)}</p>`;
-    view.innerHTML = `${heading(labels.title, `${episode.title} · ${labels.intro}`)}
+    const voiceOptions = matchingVoices.map((item) => `<option value="${h(item.id)}" ${item.id === episode.selected_voice_id ? "selected" : ""}>${h(item.display_name)} · ${langShort(item.language)} · ${h(item.availability)}</option>`).join("");
+    const handoffRows = handoffs.length ? handoffs.map((item) => `<article class="generation-handoff"><strong>${h(statusText(item.status))}</strong><span>${h(item.voice_name)} · Drama 3 / ${h(item.model)} · ${h(dateLabel(item.created_at, english ? "en-US" : "pt-BR"))}</span>${item.failure_code ? `<small>${h(item.failure_code)}</small>` : ""}${item.status === "prepared" ? `<label>${h(labels.failure)} <select data-handoff-failure="${h(item.id)}"><option value="mcp_error">${english ? "MCP error" : "Erro MCP"}</option><option value="cancelled">${english ? "Cancelled" : "Cancelado"}</option><option value="output_unavailable">${english ? "Output unavailable" : "Arquivo indisponível"}</option><option value="other">${english ? "Other" : "Outro"}</option></select></label><button class="button secondary small" data-action="record-handoff-failure" data-id="${h(item.id)}">${h(labels.recordFailure)}</button><div class="generation-error" data-handoff-error="${h(item.id)}" role="alert"></div><p>${h(labels.manual)}</p><a download="codex-handoff-${h(item.id)}.json" href="data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify({ handoff_id: item.id, script: item.script, script_sha256: item.script_sha256, voice: { display_name: item.voice_name, fish_audio_id: item.fish_audio_id }, model_preference: { label: FISH_AUDIO_MODEL_LABEL, identifier: item.model }, instructions: labels.manual }, null, 2))}">${english ? "Download handoff JSON" : "Baixar handoff JSON"}</a><label>${h(labels.import)}<input type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,audio/*" data-generation-file="${h(item.id)}"></label>` : ""}</article>`).join("") : `<p>${h(labels.empty)}</p>`;
+    const reviewStatus = (status) => status === "approved" ? labels.approved : status === "rejected" ? labels.rejected : labels.pendingReview;
+    const history = files.length ? files.map((item, index) => `<article class="audio-version" data-audio-version="${h(item.id)}"><div class="audio-version-heading"><strong>${h(labels.version)} ${files.length - index} · ${h(reviewStatus(item.approval_status))}</strong>${item.approval_status === "approved" ? `<span class="approved-lock">🔒 ${h(labels.approved)}</span>` : ""}</div><p>${h(item.voice_name || item.fish_audio_id || (english ? "Local audio import" : "Importação local de áudio"))} ${item.model ? `· Drama 3 / ${h(item.model)}` : ""}</p><p>${h(labels.generated)} · <time datetime="${h(item.created_at)}">${h(dateLabel(item.created_at, english ? "en-US" : "pt-BR")) || "—"}</time></p><p>${h(labels.file)} · ${h(item.filename)} · ${Number(item.size_bytes).toLocaleString(english ? "en-US" : "pt-BR")} bytes</p>${item.script_sha256 ? `<code>SHA-256 · ${h(item.script_sha256)}</code>` : ""}<audio controls preload="metadata" data-audio-duration="${h(item.id)}" aria-label="${h(labels.version)} ${files.length - index}" src="/api/files/${encodeURIComponent(item.id)}">${h(labels.playUnsupported)}</audio><p class="audio-duration" data-duration-label="${h(item.id)}">${h(labels.duration)} · ${h(labels.durationPending)}</p><a class="audio-download" download="${h(item.filename)}" href="/api/files/${encodeURIComponent(item.id)}">↓ ${h(labels.download)}</a>${item.handoff_id && item.approval_status !== "approved" && item.approval_status !== "rejected" ? `<div class="audio-review-actions"><button class="button secondary small" data-action="review-audio" data-id="${h(item.id)}" data-status="rejected">${english ? "Reject version" : "Rejeitar versão"}</button><button class="button small" data-action="review-audio" data-id="${h(item.id)}" data-status="approved">${english ? "Approve version" : "Aprovar versão"}</button></div>` : item.approval_status === "rejected" ? `<strong class="rejected-label">${h(labels.rejected)}</strong>` : ""}${item.handoff_id ? `<p class="audio-provenance">${h(labels.uploadInfo)}</p>` : ""}</article>`).join("") : `<p>${h(labels.empty)}</p>`;
+    const selectedVoiceSummary = voice ? `${h(voice.display_name)} · ${h(voice.fish_audio_id)} · ${h(voice.availability)}` : h(labels.voiceNone);
+    view.innerHTML = `<div class="review-language"><label for="generation-language">${h(labels.locale)}</label><select id="generation-language" aria-label="${h(labels.locale)}"><option value="pt" ${english ? "" : "selected"}>PT-BR</option><option value="en" ${english ? "selected" : ""}>EN</option></select></div>${heading(labels.title, `${episode.title} · ${labels.intro}`)}
       <section class="editorial-safety"><strong>✓ ${h(labels.safety)}</strong><p>${h(labels.safetyCopy)} ${h(labels.noMcp)}</p></section>
+      <nav class="script-steps generation-steps" aria-label="${english ? "Audio workflow" : "Fluxo de áudio"}"><span>01 · ${h(labels.script)} ${approved ? "✓" : "○"}</span><span>02 · ${h(labels.voice)} ${voice && voice.availability === "available" ? "✓" : "○"}</span><span aria-current="step">03 · ${h(labels.handoffStep)}</span><span>04 · ${h(labels.history)}</span></nav>
       <div class="generation-columns"><section class="panel generation-setup"><span class="eyebrow">${h(labels.script)}</span><textarea readonly aria-label="${h(labels.script)}">${h(episode.fish_audio_script)}</textarea>
-       <p>${approved ? (english ? "Exact saved script approved." : "Script salvo exato aprovado.") : h(labels.notReady)}</p>
-       <h3>${h(labels.voice)}</h3><p>${voice ? `${h(voice.display_name)} · ${h(voice.fish_audio_id)} · ${h(voice.availability)}` : h(english ? "No registered voice selected." : "Nenhuma voz registrada selecionada.")}</p>
-       <h3>${h(labels.model)}</h3><p><strong>Fish Audio Drama 3 · drama-3</strong></p><p class="muted">${h(labels.manual)}</p>
-       <button class="button primary" data-action="prepare-handoff" ${approved && voice && voice.availability === "available" && voice.language === episode.language ? "" : "disabled"}>${h(labels.prepare)}</button><div class="generation-error" id="generation-error" role="alert"></div>
-      </section><section class="panel"><h2>${h(labels.handoffs)}</h2>${handoffRows}</section></div>
+       <p class="generation-script-state">${approved ? `✓ ${h(labels.scriptApproval)} · ${h(dateLabel(episode.fish_audio_approved_at, english ? "en-US" : "pt-BR"))}` : h(labels.notReady)}</p>${episode.fish_audio_approved_sha256 ? `<code class="script-digest">SHA-256 · ${h(episode.fish_audio_approved_sha256)}</code>` : ""}<a class="text-link" href="#scripts/${encodeURIComponent(episode.id)}">${english ? "Review approved script" : "Revisar script aprovado"} →</a>
+       <h3>${h(labels.voice)}</h3><label class="sr-only" for="generation-voice">${h(labels.voice)}</label><div class="voice-selection"><select id="generation-voice" ${matchingVoices.length ? "" : "disabled"}><option value="">${h(labels.voiceNone)}</option>${voiceOptions}</select><button class="button secondary small" data-action="save-generation-voice" ${matchingVoices.length && episode.selected_voice_id ? "" : "disabled"}>${h(labels.saveVoice)}</button></div><p id="generation-voice-summary">${selectedVoiceSummary} ${voice && voice.availability !== "available" ? `· ${h(labels.voiceUnavailable)}` : ""}</p>
+       <h3>${h(labels.model)}</h3><p><strong>Fish Audio Drama 3 · drama-3</strong></p><p class="model-caveat">${h(labels.manual)}</p><p class="muted">${english ? "No additional parameters are exposed because the live MCP schema is unknown." : "Nenhum parâmetro adicional é exibido porque o esquema MCP ativo é desconhecido."}</p>
+       <button class="button primary" data-action="prepare-handoff" data-script-ready="${approved}" data-episode-language="${h(episode.language)}" ${approved && voice && voice.availability === "available" && voice.language === episode.language ? "" : "disabled"}>${h(labels.prepare)}</button><p class="field-help">${h(labels.generationHelp)}</p><div class="generation-error" id="generation-error" role="alert" aria-live="assertive"></div>
+      </section><section class="panel handoff-panel"><h2>${h(labels.handoffs)}</h2>${handoffRows}</section></div>
       <section class="panel generation-history"><h2>${h(labels.history)}</h2><p class="muted">${english ? "Every import receives a new directory. Existing and approved audio files are never replaced." : "Cada importação recebe uma nova pasta. Áudios existentes e aprovados nunca são substituídos."}</p>${history}</section>
-      <a class="button secondary" href="#scripts/${encodeURIComponent(episode.id)}">${english ? "Back to script review" : "Voltar à revisão do script"}</a>`;
+      <a class="button secondary" href="#scripts/${encodeURIComponent(episode.id)}">${english ? "Back to script review" : "Voltar à revisão do script"}</a>
+      <dialog id="handoff-confirm-dialog" class="approval-dialog" aria-labelledby="handoff-confirm-title"><form method="dialog"><p class="eyebrow">${english ? "EXPLICIT ACTION · STILL NO GENERATION" : "AÇÃO EXPLÍCITA · AINDA SEM GERAÇÃO"}</p><h2 id="handoff-confirm-title">${h(labels.confirmHandoff)}</h2><p>${h(episode.title)} · ${h(voice ? voice.display_name : labels.voiceNone)} · Fish Audio Drama 3 / drama-3</p><p>${h(labels.confirm)}</p><p>${h(labels.handoffConfirmCopy)}</p><div class="dialog-actions"><button class="button secondary" value="cancel">${h(labels.cancelHandoff)}</button><button class="button primary" value="confirm" data-action="confirm-handoff">${h(labels.yesHandoff)}</button></div></form></dialog>
+      <dialog id="audio-review-dialog" class="approval-dialog" aria-labelledby="audio-review-title"><form method="dialog"><p class="eyebrow">${english ? "EXPLICIT AUDIO REVIEW · NO PUBLISHING" : "REVISÃO EXPLÍCITA · SEM PUBLICAÇÃO"}</p><h2 id="audio-review-title">${h(labels.review)}</h2><p id="audio-review-prompt"></p><p>${h(labels.preserve)}</p><div class="dialog-actions"><button class="button secondary" value="cancel" data-action="cancel-audio-review">${h(labels.cancelReview)}</button><button class="button primary" value="confirm" data-action="confirm-audio-review">${h(labels.confirmReview)}</button></div></form></dialog>`;
+    view.querySelectorAll("audio[data-audio-duration]").forEach((player) => {
+      const output = Array.from(view.querySelectorAll("[data-duration-label]")).find((item) => item.dataset.durationLabel === player.dataset.audioDuration);
+      if (!output) return;
+      player.addEventListener("loadedmetadata", () => {
+        output.textContent = `${labels.duration} · ${Number.isFinite(player.duration) ? formatAudioDuration(player.duration) : labels.durationUnknown}`;
+      }, { once: true });
+      player.addEventListener("error", () => { output.textContent = `${labels.duration} · ${labels.durationUnknown}`; }, { once: true });
+      if (Number.isFinite(player.duration) && player.duration > 0) output.textContent = `${labels.duration} · ${formatAudioDuration(player.duration)}`;
+    });
   }
 
   async function renderVoices(requestId) {
@@ -567,6 +602,20 @@
       paintScriptReview();
       document.getElementById("interface-language").focus();
     }
+    if (event.target.id === "generation-language" && currentRoute.startsWith("#generation/")) {
+      generationLanguage = event.target.value;
+      interfaceLanguage = generationLanguage;
+      loadRoute();
+    }
+    if (event.target.id === "generation-voice") {
+      const save = view.querySelector('[data-action="save-generation-voice"]');
+      if (save) save.disabled = !event.target.value;
+      const voice = currentVoices.find((item) => item.id === event.target.value);
+      const summary = document.getElementById("generation-voice-summary");
+      if (summary) summary.textContent = voice ? `${voice.display_name} · ${voice.fish_audio_id} · ${voice.availability}` : (document.documentElement.lang === "en" ? "No voice selected" : "Nenhuma voz selecionada");
+      const prepare = view.querySelector('[data-action="prepare-handoff"]');
+      if (prepare) prepare.disabled = prepare.dataset.scriptReady !== "true" || !voice || voice.availability !== "available" || voice.language !== prepare.dataset.episodeLanguage;
+    }
     if (event.target.name === "suggestion-scope" && scriptReview) scriptReview.scope = event.target.value;
     if (event.target.id === "suggestion-history" && scriptReview) {
       captureScriptEditors();
@@ -639,23 +688,44 @@
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     if (action === "retry") go(button.dataset.hash || "#dashboard");
-    if (action === "prepare-handoff") {
-      if (!window.confirm("Prepare this local handoff? Audio generation only happens after a separate confirmation in Codex.")) return;
+    if (action === "save-generation-voice") {
+      const select = document.getElementById("generation-voice");
+      if (!select || !select.value) return;
       button.disabled = true;
+      try {
+        const route = currentRoute.slice(1).split("/");
+        await api.updateEpisode(route[1], { selected_voice_id: select.value });
+        await loadRoute();
+        showNotice(document.documentElement.lang === "en" ? "Registered voice selection saved locally." : "Seleção de voz registrada salva localmente.");
+      } catch (_error) {
+        showNotice(document.documentElement.lang === "en" ? "Could not save this voice selection. No audio was generated." : "Não foi possível salvar esta seleção de voz. Nenhum áudio foi gerado.", "error");
+        button.disabled = false;
+      }
+    }
+    if (action === "prepare-handoff") {
+      if (button.disabled) return;
+      const dialog = document.getElementById("handoff-confirm-dialog");
+      if (dialog) dialog.showModal();
+    }
+    if (action === "confirm-handoff") {
+      event.preventDefault();
+      button.disabled = true;
+      const dialog = document.getElementById("handoff-confirm-dialog");
       const errorBox = document.getElementById("generation-error");
       try {
         const route = currentRoute.slice(1).split("/");
         await api.prepareGenerationHandoff(route[1], true);
         await loadRoute();
-      } catch (error) {
-        if (errorBox) errorBox.textContent = error.message;
+      } catch (_error) {
+        if (dialog) dialog.close();
+        if (errorBox) errorBox.textContent = document.documentElement.lang === "en" ? "Could not prepare this handoff. Verify the approved script and available voice, then try again. No provider call was made." : "Não foi possível preparar este handoff. Confira o script aprovado e a voz disponível e tente novamente. Nenhuma chamada ao provedor foi feita.";
         button.disabled = false;
       }
     }
     if (action === "record-handoff-failure") {
       const handoffId = button.dataset.id;
       const errorBox = document.querySelector(`[data-handoff-error="${CSS.escape(handoffId)}"]`);
-      if (!window.confirm("Record this handoff as failed? This does not retry or call Fish Audio.")) return;
+      if (!window.confirm(document.documentElement.lang === "en" ? "Record this handoff as failed? This does not retry or call Fish Audio." : "Registrar este handoff como falha? Isso não tenta novamente nem chama o Fish Audio.")) return;
       button.disabled = true;
       try {
         const route = currentRoute.slice(1).split("/");
@@ -668,15 +738,40 @@
       }
     }
     if (action === "review-audio") {
-      if (!window.confirm(button.dataset.status === "approved" ? "Approve this audio version? Other versions remain unchanged." : "Reject this audio version? The local file remains preserved.")) return;
-      button.disabled = true;
-      try {
-        await api.reviewAudioFile(button.dataset.id, button.dataset.status, true);
-        await loadRoute();
-      } catch (error) {
-        showNotice(error.message, "error");
-        button.disabled = false;
+      pendingAudioReview = { id: button.dataset.id, status: button.dataset.status };
+      const dialog = document.getElementById("audio-review-dialog");
+      const prompt = document.getElementById("audio-review-prompt");
+      const labels = document.documentElement.lang === "en" ? {
+        approve: "Approve this audio version?", reject: "Reject this audio version? The local file will remain preserved.", confirm: "Confirm review",
+      } : {
+        approve: "Aprovar esta versão de áudio?", reject: "Rejeitar esta versão de áudio? O arquivo local será preservado.", confirm: "Confirmar revisão",
+      };
+      if (prompt) {
+        const card = button.closest(".audio-version");
+        const version = card && card.querySelector(".audio-version-heading") ? card.querySelector(".audio-version-heading").textContent : "";
+        prompt.textContent = `${pendingAudioReview.status === "approved" ? labels.approve : labels.reject} ${version}`.trim();
       }
+      const confirmButton = dialog && dialog.querySelector('[data-action="confirm-audio-review"]');
+      if (confirmButton) confirmButton.textContent = labels.confirm;
+      if (dialog) dialog.showModal();
+    }
+    if (action === "cancel-audio-review") pendingAudioReview = null;
+    if (action === "confirm-audio-review") {
+      event.preventDefault();
+      if (!pendingAudioReview) return;
+      button.disabled = true;
+      const review = pendingAudioReview;
+      try {
+        await api.reviewAudioFile(review.id, review.status, true);
+        pendingAudioReview = null;
+        await loadRoute();
+        showNotice(document.documentElement.lang === "en" ? "Audio review saved. The local recording was preserved." : "Revisão de áudio salva. A gravação local foi preservada.");
+      } catch (_error) {
+        const dialog = document.getElementById("audio-review-dialog");
+        if (dialog) dialog.close();
+        pendingAudioReview = null;
+        showNotice(document.documentElement.lang === "en" ? "Could not save this review. The audio file was not changed." : "Não foi possível salvar esta revisão. O arquivo de áudio não foi alterado.", "error");
+      } finally { button.disabled = false; }
     }
   });
   view.addEventListener("change", async (event) => {
@@ -687,7 +782,7 @@
       const route = currentRoute.slice(1).split("/");
       await api.importGeneration(route[1], input.dataset.generationFile, file);
       await loadRoute();
-      showNotice("Áudio importado como uma nova versão local. Nenhum arquivo anterior foi alterado.");
+      showNotice(document.documentElement.lang === "en" ? "Audio imported as a new local version. No previous file was changed." : "Áudio importado como uma nova versão local. Nenhum arquivo anterior foi alterado.");
     } catch (error) {
       const handoffError = document.querySelector(`[data-handoff-error="${CSS.escape(input.dataset.generationFile)}"]`);
       if (handoffError) handoffError.textContent = error.message;
