@@ -9,14 +9,16 @@ import mimetypes
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import parse_qs, unquote
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from wsgiref.simple_server import make_server
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from codex_audio import MAX_VOICE_SAMPLE_BYTES, CodexAudioError, CodexFishAudio
 from narration import SuggestionError, provider_from_environment, source_digest
 from transistor import TransistorClient, TransistorError
 
@@ -31,6 +33,7 @@ VOICE_TYPES = {"external", "own", "other"}
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_FILE_BYTES = 500 * 1024 * 1024
 ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"}
+VOICE_SAMPLE_EXTENSIONS = {".mp3", ".wav", ".m4a", ".opus"}
 FISH_AUDIO_MODEL = "drama-3"
 FISH_AUDIO_MODEL_LABEL = "Fish Audio Drama 3"
 HANDOFF_FAILURE_CODES = {"mcp_error", "cancelled", "output_unavailable", "other"}
@@ -117,7 +120,8 @@ class Studio:
                 CREATE TABLE IF NOT EXISTS voices (
                     id TEXT PRIMARY KEY, display_name TEXT NOT NULL, fish_audio_id TEXT NOT NULL UNIQUE,
                     language TEXT NOT NULL CHECK(language IN ('pt','en')), description TEXT NOT NULL DEFAULT '',
-                    voice_type TEXT NOT NULL, availability TEXT NOT NULL, registered_at TEXT NOT NULL,
+                    voice_type TEXT NOT NULL, availability TEXT NOT NULL,
+                    fish_audio_visibility TEXT NOT NULL DEFAULT '', registered_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS article_revisions (
@@ -138,6 +142,20 @@ class Studio:
                     model TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('prepared','imported','failed')),
                     failure_code TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS generation_runs (
+                    id TEXT PRIMARY KEY, handoff_id TEXT NOT NULL UNIQUE REFERENCES generation_handoffs(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL CHECK(status IN ('quoting','quoted','generating','imported','failed')),
+                    estimated_credits REAL, quote_summary TEXT, file_id TEXT,
+                    failure_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS voice_clone_jobs (
+                    id TEXT PRIMARY KEY, display_name TEXT NOT NULL, language TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '', transcript TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed')),
+                    fish_audio_id TEXT, voice_id TEXT, provider_state TEXT, visibility TEXT,
+                    requested_visibility TEXT NOT NULL DEFAULT 'private',
+                    error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS narration_suggestions (
                     id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
                     scope TEXT NOT NULL CHECK(scope IN ('article','paragraph')),
@@ -157,6 +175,12 @@ class Studio:
                 CREATE INDEX IF NOT EXISTS idx_files_episode ON files(episode_id, created_at DESC);
             """)
             file_columns = {row[1] for row in db.execute("PRAGMA table_info(files)")}
+            voice_columns = {row[1] for row in db.execute("PRAGMA table_info(voices)")}
+            if "fish_audio_visibility" not in voice_columns:
+                db.execute("ALTER TABLE voices ADD COLUMN fish_audio_visibility TEXT NOT NULL DEFAULT ''")
+            clone_job_columns = {row[1] for row in db.execute("PRAGMA table_info(voice_clone_jobs)")}
+            if "requested_visibility" not in clone_job_columns:
+                db.execute("ALTER TABLE voice_clone_jobs ADD COLUMN requested_visibility TEXT NOT NULL DEFAULT 'private'")
             for name, declaration in (
                 ("handoff_id", "TEXT"), ("voice_id", "TEXT"), ("fish_audio_id", "TEXT"),
                 ("model", "TEXT"), ("script_sha256", "TEXT"),
@@ -165,6 +189,12 @@ class Studio:
                 if name not in file_columns:
                     db.execute(f"ALTER TABLE files ADD COLUMN {name} {declaration}")
             db.execute("CREATE INDEX IF NOT EXISTS idx_handoffs_episode ON generation_handoffs(episode_id, created_at DESC)")
+            db.execute("""UPDATE generation_runs SET status='failed',failure_code='interrupted',
+                error_message='The server restarted during the Codex/Fish Audio request. Check Fish Audio history before retrying.',
+                updated_at=? WHERE status IN ('quoting','generating')""", (now(),))
+            db.execute("""UPDATE voice_clone_jobs SET status='failed',
+                error_message='The server restarted during voice cloning. Check Fish Audio before retrying.',
+                description='',transcript='',updated_at=? WHERE status IN ('queued','running')""", (now(),))
             columns = {row[1] for row in db.execute("PRAGMA table_info(episodes)")}
             if "fish_audio_approved_sha256" not in columns:
                 db.execute("ALTER TABLE episodes ADD COLUMN fish_audio_approved_sha256 TEXT")
@@ -377,14 +407,77 @@ class Studio:
             row = db.execute("SELECT * FROM generation_handoffs WHERE id=?", (handoff_id,)).fetchone()
         if row is None:
             raise ApiError(404, "not_found", "Generation handoff not found.")
-        return dict(row)
+        handoff = dict(row)
+        handoff["generation_run"] = self.get_generation_run(handoff_id)
+        return handoff
+
+    def get_generation_run(self, handoff_id):
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM generation_runs WHERE handoff_id=?", (handoff_id,)).fetchone()
+        return dict(row) if row else None
+
+    def start_generation_quote(self, episode_id, handoff_id, body):
+        if set(body) != {"confirm_quote"} or body.get("confirm_quote") is not True:
+            raise ApiError(400, "confirmation_required", "Confirm the Fish Audio quote request.")
+        episode = self.get_episode(episode_id)
+        handoff = self.get_generation_handoff(handoff_id)
+        if handoff["episode_id"] != episode["id"] or handoff["status"] != "prepared":
+            raise ApiError(409, "handoff_not_pending", "Only a prepared handoff can be quoted.")
+        if handoff["generation_run"]:
+            raise ApiError(409, "generation_already_started", "This handoff already has a quote or generation attempt.")
+        stamp = now()
+        with self.connect() as db:
+            try:
+                db.execute("INSERT INTO generation_runs (id,handoff_id,status,created_at,updated_at) VALUES(?,?,'quoting',?,?)",
+                           (str(uuid.uuid4()), handoff_id, stamp, stamp))
+            except sqlite3.IntegrityError:
+                raise ApiError(409, "generation_already_started", "This handoff already has a quote or generation attempt.") from None
+        return self.get_generation_run(handoff_id)
+
+    def finish_generation_quote(self, handoff_id, quote):
+        stamp = now()
+        with self.connect() as db:
+            updated = db.execute("""UPDATE generation_runs SET status='quoted',estimated_credits=?,quote_summary=?,updated_at=?
+                WHERE handoff_id=? AND status='quoting'""",
+                (quote["estimated_credits"], quote["quote_summary"], stamp, handoff_id))
+        if updated.rowcount != 1:
+            raise ApiError(409, "generation_not_pending", "The quote request is no longer pending.")
+        return self.get_generation_run(handoff_id)
+
+    def start_audio_generation(self, episode_id, handoff_id, body):
+        if set(body) != {"confirm_generation"} or body.get("confirm_generation") is not True:
+            raise ApiError(400, "confirmation_required", "Explicit confirmation is required to generate paid audio.")
+        episode = self.get_episode(episode_id)
+        handoff = self.get_generation_handoff(handoff_id)
+        if handoff["episode_id"] != episode["id"] or handoff["status"] != "prepared":
+            raise ApiError(409, "handoff_not_pending", "Only a prepared handoff can be generated.")
+        if not handoff["generation_run"] or handoff["generation_run"]["status"] != "quoted":
+            raise ApiError(409, "quote_required", "Obtain and review a Fish Audio quote before generating.")
+        stamp = now()
+        with self.connect() as db:
+            updated = db.execute("UPDATE generation_runs SET status='generating',updated_at=? WHERE handoff_id=? AND status='quoted'",
+                                 (stamp, handoff_id))
+        if updated.rowcount != 1:
+            raise ApiError(409, "generation_not_pending", "This quote has already been used.")
+        return self.get_generation_run(handoff_id)
+
+    def fail_audio_generation(self, handoff_id, failure_code, message):
+        stamp = now()
+        with self.connect() as db:
+            db.execute("""UPDATE generation_runs SET status='failed',failure_code=?,error_message=?,updated_at=?
+                WHERE handoff_id=? AND status IN ('quoting','generating')""",
+                (failure_code, message[:500], stamp, handoff_id))
+        return self.get_generation_run(handoff_id)
 
     def list_generation_handoffs(self, episode_id):
         episode = self.get_episode(episode_id)
         with self.connect() as db:
-            return [dict(row) for row in db.execute(
+            handoffs = [dict(row) for row in db.execute(
                 "SELECT * FROM generation_handoffs WHERE episode_id=? ORDER BY created_at DESC,id DESC",
                 (episode["id"],)).fetchall()]
+        for handoff in handoffs:
+            handoff["generation_run"] = self.get_generation_run(handoff["id"])
+        return handoffs
 
     def fail_generation_handoff(self, episode_id, handoff_id, body):
         allowed = {"confirm_failure", "failure_code"}
@@ -401,6 +494,8 @@ class Studio:
             raise ApiError(404, "not_found", "Generation handoff not found.")
         if handoff["status"] != "prepared":
             raise ApiError(409, "handoff_not_pending", "Only a prepared handoff can be marked failed.")
+        if handoff["generation_run"]:
+            raise ApiError(409, "generation_already_started", "This handoff already has a quote or generation attempt.")
         stamp = now()
         with self.connect() as db:
             db.execute("UPDATE generation_handoffs SET status='failed',failure_code=?,updated_at=? WHERE id=? AND status='prepared'",
@@ -484,6 +579,7 @@ class Studio:
         language = body.get("language")
         voice_type = body.get("voice_type", "external")
         availability = body.get("availability", "unknown")
+        fish_visibility = body.get("fish_audio_visibility", "")
         description = validate_text(body.get("description", ""), "description", maximum=5000)
         if not isinstance(language, str) or language not in LANGUAGES:
             raise ApiError(400, "invalid_language", "language must be 'pt' or 'en'.")
@@ -491,13 +587,15 @@ class Studio:
             raise ApiError(400, "invalid_voice_type", "voice_type must be external, own, or other.")
         if not isinstance(availability, str) or availability not in VOICE_STATUSES:
             raise ApiError(400, "invalid_availability", "availability must be available, unavailable, or unknown.")
+        if not isinstance(fish_visibility, str) or fish_visibility not in {"", "private", "unlist", "public", "unknown"}:
+            raise ApiError(400, "invalid_visibility", "fish_audio_visibility must be private, unlist, public, or unknown.")
         voice_id, stamp = str(uuid.uuid4()), now()
         try:
             with self.connect() as db:
                 db.execute("""INSERT INTO voices
-                    (id,display_name,fish_audio_id,language,description,voice_type,availability,registered_at,updated_at)
-                    VALUES(?,?,?,?,?,?,?,?,?)""",
-                    (voice_id,name,fish_id,language,description,voice_type,availability,stamp,stamp))
+                    (id,display_name,fish_audio_id,language,description,voice_type,availability,fish_audio_visibility,registered_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (voice_id,name,fish_id,language,description,voice_type,availability,fish_visibility,stamp,stamp))
         except sqlite3.IntegrityError as exc:
             raise ApiError(409, "duplicate_voice_id", "That Fish Audio voice identifier is already registered.") from exc
         LOG.info("Registered voice %s", voice_id)
@@ -506,6 +604,66 @@ class Studio:
     def list_voices(self):
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM voices ORDER BY display_name COLLATE NOCASE").fetchall()]
+
+    def create_voice_clone_job(self, body):
+        display_name = validate_text(body.get("display_name"), "display_name", required=True, maximum=200)
+        language = body.get("language")
+        if not isinstance(language, str) or language not in LANGUAGES:
+            raise ApiError(400, "invalid_language", "language must be 'pt' or 'en'.")
+        visibility = body.get("visibility", "private")
+        if not isinstance(visibility, str) or visibility not in {"private", "unlist", "public"}:
+            raise ApiError(400, "invalid_visibility", "visibility must be private, unlist, or public.")
+        description = validate_text(body.get("description", ""), "description", maximum=5000)
+        job_id, stamp = str(uuid.uuid4()), now()
+        with self.connect() as db:
+            db.execute("""INSERT INTO voice_clone_jobs
+                (id,display_name,language,description,status,requested_visibility,created_at,updated_at)
+                VALUES(?,?,?,?,'queued',?,?,?)""",
+                (job_id, display_name, language, description, visibility, stamp, stamp))
+        return self.get_voice_clone_job(job_id)
+
+    def get_voice_clone_job(self, job_id, *, include_private=False):
+        try:
+            job_id = str(uuid.UUID(job_id))
+        except (ValueError, AttributeError):
+            raise ApiError(404, "not_found", "Voice clone job not found.") from None
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM voice_clone_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise ApiError(404, "not_found", "Voice clone job not found.")
+        record = dict(row)
+        if not include_private:
+            record.pop("description", None)
+            record.pop("transcript", None)
+        return record
+
+    def start_voice_clone_job(self, job_id):
+        self.get_voice_clone_job(job_id)
+        with self.connect() as db:
+            db.execute("UPDATE voice_clone_jobs SET status='running',updated_at=? WHERE id=? AND status='queued'",
+                       (now(), job_id))
+
+    def complete_voice_clone_job(self, job_id, clone):
+        job = self.get_voice_clone_job(job_id, include_private=True)
+        voice = self.register_voice({
+            "display_name": job["display_name"],
+            "fish_audio_id": clone["fish_audio_id"],
+            "language": job["language"],
+            "description": job["description"] or "Criada pelo estúdio usando Fish Audio MCP.",
+            "voice_type": "own",
+            "availability": "available",
+            "fish_audio_visibility": clone["visibility"],
+        })
+        with self.connect() as db:
+            db.execute("""UPDATE voice_clone_jobs SET status='completed',fish_audio_id=?,voice_id=?,
+                provider_state=?,visibility=?,error_message=NULL,description='',transcript='',updated_at=? WHERE id=?""",
+                (clone["fish_audio_id"], voice["id"], clone["state"], clone["visibility"], now(), job_id))
+        return self.get_voice_clone_job(job_id)
+
+    def fail_voice_clone_job(self, job_id, message):
+        with self.connect() as db:
+            db.execute("""UPDATE voice_clone_jobs SET status='failed',error_message=?,description='',transcript='',updated_at=?
+                WHERE id=? AND status IN ('queued','running')""", (message[:1000], now(), job_id))
 
     def get_voice(self, voice_id):
         try:
@@ -518,7 +676,7 @@ class Studio:
             raise ApiError(404, "not_found", "Voice not found.")
         return dict(row)
 
-    def store_file(self, episode_id, filename, media_type, data: bytes, handoff_id=None):
+    def store_file(self, episode_id, filename, media_type, data: bytes, handoff_id=None, codex_generated=False):
         episode = self.get_episode(episode_id)
         handoff = None
         if handoff_id is not None:
@@ -527,6 +685,12 @@ class Studio:
                 raise ApiError(404, "not_found", "Generation handoff not found for this episode.")
             if handoff["status"] != "prepared":
                 raise ApiError(409, "handoff_not_pending", "This handoff is not awaiting an audio import.")
+            if codex_generated and (
+                not handoff["generation_run"] or handoff["generation_run"]["status"] != "generating"
+            ):
+                raise ApiError(409, "generation_not_pending", "This Codex generation is no longer pending.")
+            if not codex_generated and handoff["generation_run"]:
+                raise ApiError(409, "generation_already_started", "This handoff already has a quote or generation attempt.")
         filename = safe_filename(filename)
         ext = Path(filename).suffix.lower()
         media_type = media_type.split(";", 1)[0].strip().lower() or mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -569,6 +733,12 @@ class Studio:
                                          (stamp, handoff["id"]))
                     if updated.rowcount != 1:
                         raise ApiError(409, "handoff_not_pending", "This handoff is not awaiting an audio import.")
+                    if codex_generated:
+                        updated = db.execute("""UPDATE generation_runs SET status='imported',file_id=?,updated_at=?
+                            WHERE handoff_id=? AND status='generating'""",
+                            (file_id, stamp, handoff["id"]))
+                        if updated.rowcount != 1:
+                            raise ApiError(409, "generation_not_pending", "This Codex generation is no longer pending.")
                 db.execute("UPDATE episodes SET updated_at=? WHERE id=?", (stamp, episode["id"]))
         except Exception:
             import shutil
@@ -821,10 +991,13 @@ class Studio:
                 "published_episodes": by_status.get("Published", 0), "by_status": by_status, "recent_episodes": recent}
 
 
-def create_app(data_dir: str | Path | None = None, suggestion_provider=None, transistor_client=None):
+def create_app(data_dir: str | Path | None = None, suggestion_provider=None, transistor_client=None,
+               codex_audio_provider=None):
     """Return the WSGI app; integrations can be injected for deterministic tests."""
     studio = Studio(data_dir or os.environ.get("STUDIO_DATA_DIR", "data"))
     transistor = transistor_client if transistor_client is not None else TransistorClient()
+    codex_audio = codex_audio_provider if codex_audio_provider is not None else CodexFishAudio()
+    codex_job_lock = threading.Lock()
 
     def json_response(start_response, status, value, headers=()):
         payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -841,6 +1014,69 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None, tra
                    ("Cache-Control", "no-cache"), ("X-Content-Type-Options", "nosniff")]
         start_response(f"200 {HTTPStatus.OK.phrase}", headers)
         return [payload]
+
+    def start_quote_worker(handoff_id):
+        def work():
+            try:
+                quote = codex_audio.quote(studio.get_generation_handoff(handoff_id))
+                studio.finish_generation_quote(handoff_id, quote)
+            except CodexAudioError as exc:
+                studio.fail_audio_generation(handoff_id, "codex_error", str(exc))
+            except Exception:
+                LOG.exception("Unexpected Fish Audio quote failure for handoff %s", handoff_id)
+                studio.fail_audio_generation(handoff_id, "codex_error",
+                                             "The Fish Audio quote failed unexpectedly. Check the Codex MCP connection.")
+            finally:
+                codex_job_lock.release()
+
+        threading.Thread(target=work, name=f"fish-audio-quote-{handoff_id[:8]}", daemon=True).start()
+
+    def start_generation_worker(episode_id, handoff_id):
+        def work():
+            try:
+                handoff = studio.get_generation_handoff(handoff_id)
+                audio, media_type = codex_audio.generate(handoff)
+                studio.store_file(episode_id, "fish-audio-generation.mp3", media_type, audio,
+                                  handoff_id=handoff_id, codex_generated=True)
+            except CodexAudioError as exc:
+                studio.fail_audio_generation(handoff_id, "codex_error", str(exc))
+            except ApiError as exc:
+                studio.fail_audio_generation(
+                    handoff_id, "audio_import_error",
+                    f"{exc.message} Check Fish Audio history before retrying; generation may have completed.",
+                )
+            except Exception:
+                LOG.exception("Unexpected Fish Audio generation failure for handoff %s", handoff_id)
+                studio.fail_audio_generation(handoff_id, "codex_error",
+                                             "Audio generation failed unexpectedly. Check Fish Audio history before retrying.")
+            finally:
+                codex_job_lock.release()
+
+        threading.Thread(target=work, name=f"fish-audio-generate-{handoff_id[:8]}", daemon=True).start()
+
+    def start_voice_clone_worker(job_id, filename, sample):
+        def work():
+            try:
+                studio.start_voice_clone_job(job_id)
+                job = studio.get_voice_clone_job(job_id, include_private=True)
+                clone = codex_audio.clone_voice(
+                    sample, filename, display_name=job["display_name"],
+                    visibility=job["requested_visibility"],
+                )
+                studio.complete_voice_clone_job(job_id, clone)
+            except CodexAudioError as exc:
+                studio.fail_voice_clone_job(job_id, str(exc))
+            except ApiError as exc:
+                studio.fail_voice_clone_job(job_id, exc.message)
+            except Exception:
+                LOG.exception("Unexpected Fish Audio voice clone failure for job %s", job_id)
+                studio.fail_voice_clone_job(
+                    job_id, "Voice cloning failed unexpectedly. Check the Codex MCP connection and Fish Audio history."
+                )
+            finally:
+                codex_job_lock.release()
+
+        threading.Thread(target=work, name=f"fish-audio-voice-clone-{job_id[:8]}", daemon=True).start()
 
     def app(environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET").upper()
@@ -865,6 +1101,37 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None, tra
                 return json_response(start_response, 200, {"voices": studio.list_voices()})
             if path == "/api/voices" and method == "POST":
                 return json_response(start_response, 201, studio.register_voice(read_json(environ)))
+            if path == "/api/voices/clone" and method == "POST":
+                query = parse_qs(environ.get("QUERY_STRING", ""))
+                if query.get("consent", [""])[0] != "true":
+                    raise ApiError(400, "consent_required", "Confirm that you own this voice or have permission to clone it.")
+                filename = safe_filename(query.get("filename", [""])[0])
+                if Path(filename).suffix.lower() not in VOICE_SAMPLE_EXTENSIONS:
+                    raise ApiError(415, "unsupported_media", "Voice samples must be WAV, MP3, M4A, or OPUS.")
+                clone_details = {
+                    "display_name": query.get("display_name", [""])[0],
+                    "language": query.get("language", [""])[0],
+                    "visibility": query.get("visibility", ["private"])[0],
+                    "description": query.get("description", [""])[0],
+                }
+                if not codex_job_lock.acquire(blocking=False):
+                    raise ApiError(409, "fish_audio_busy", "Another Fish Audio operation is already running.")
+                try:
+                    sample = read_body(
+                        environ, MAX_VOICE_SAMPLE_BYTES, "file_too_large",
+                        "Voice sample exceeds the 50 MiB limit.",
+                    )
+                    if not sample:
+                        raise ApiError(400, "empty_file", "Voice sample must not be empty.")
+                    job = studio.create_voice_clone_job(clone_details)
+                    start_voice_clone_worker(job["id"], filename, sample)
+                except Exception:
+                    codex_job_lock.release()
+                    raise
+                return json_response(start_response, 202, {"job": job})
+            if path.startswith("/api/voice-clone-jobs/") and method == "GET":
+                job_id = path.removeprefix("/api/voice-clone-jobs/")
+                return json_response(start_response, 200, {"job": studio.get_voice_clone_job(job_id)})
             if path == "/api/transistor/shows" and method == "GET":
                 try:
                     return json_response(start_response, 200, {"shows": transistor.list_shows()})
@@ -911,11 +1178,35 @@ def create_app(data_dir: str | Path | None = None, suggestion_provider=None, tra
                     handoff = studio.create_generation_handoff(episode_id, read_json(environ))
                     handoff["model_preference"] = {"label": FISH_AUDIO_MODEL_LABEL, "identifier": FISH_AUDIO_MODEL}
                     handoff["instructions"] = (
-                        "Manual Codex handoff only. In the authenticated Codex environment, inspect the live Fish Audio MCP tool schema; "
-                        "use only fields it documents, confirm the exact script, voice and model with the user, and start generation only after that explicit confirmation. "
-                        "This studio does not call MCP and does not infer tool parameters. Save the resulting audio locally and import it as a new version."
+                        "A Codex agent will request a Fish Audio quote, then generate only after your explicit confirmation."
                     )
                     return json_response(start_response, 201, {"handoff": handoff})
+                if (len(parts) == 6 and parts[3] == "generation-handoffs"
+                        and parts[5] == "quote" and method == "POST"):
+                    if not codex_job_lock.acquire(blocking=False):
+                        raise ApiError(409, "codex_busy", "Another Codex/Fish Audio task is already running.")
+                    started = False
+                    try:
+                        run = studio.start_generation_quote(episode_id, parts[4], read_json(environ))
+                        start_quote_worker(parts[4])
+                        started = True
+                    finally:
+                        if not started:
+                            codex_job_lock.release()
+                    return json_response(start_response, 202, {"generation_run": run})
+                if (len(parts) == 6 and parts[3] == "generation-handoffs"
+                        and parts[5] == "generate" and method == "POST"):
+                    if not codex_job_lock.acquire(blocking=False):
+                        raise ApiError(409, "codex_busy", "Another Codex/Fish Audio task is already running.")
+                    started = False
+                    try:
+                        run = studio.start_audio_generation(episode_id, parts[4], read_json(environ))
+                        start_generation_worker(episode_id, parts[4])
+                        started = True
+                    finally:
+                        if not started:
+                            codex_job_lock.release()
+                    return json_response(start_response, 202, {"generation_run": run})
                 if len(parts) == 6 and parts[3] == "generation-handoffs" and parts[5] == "import" and method == "POST":
                     query = parse_qs(environ.get("QUERY_STRING", ""))
                     filename = query.get("filename", [None])[0]

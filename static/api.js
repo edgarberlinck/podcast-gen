@@ -60,10 +60,37 @@
       },
       voices: () => send("/api/voices"),
       registerVoice: (value) => send("/api/voices", json("POST", value)),
+      cloneVoice: (file, value, confirmed) => {
+        if (confirmed !== true) throw new Error("Confirme que você tem autorização para clonar esta voz e enviar o áudio ao Fish Audio.");
+        const query = new URLSearchParams({
+          consent: "true",
+          filename: file.name,
+          display_name: value.display_name,
+          language: value.language,
+          visibility: value.visibility || "private",
+          description: value.description || "",
+        });
+        return send(`/api/voices/clone?${query}`, {
+          method: "POST",
+          body: file,
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+        });
+      },
+      voiceCloneJob: (id) => send(`/api/voice-clone-jobs/${encodeURIComponent(id)}`),
       generationHandoffs: (id) => send(`/api/episodes/${encodeURIComponent(id)}/generation-handoffs`),
       prepareGenerationHandoff: (id, confirmed) => {
         if (confirmed !== true) throw new Error("A confirmação explícita é necessária para preparar o handoff.");
         return send(`/api/episodes/${encodeURIComponent(id)}/generation-handoffs`, json("POST", { confirm_handoff: true }));
+      },
+      quoteGeneration: (episodeId, handoffId, confirmed) => {
+        if (confirmed !== true) throw new Error("A confirmação explícita é necessária para solicitar a cotação.");
+        return send(`/api/episodes/${encodeURIComponent(episodeId)}/generation-handoffs/${encodeURIComponent(handoffId)}/quote`,
+          json("POST", { confirm_quote: true }));
+      },
+      generateAudio: (episodeId, handoffId, confirmed) => {
+        if (confirmed !== true) throw new Error("A confirmação explícita é necessária para gerar áudio pago.");
+        return send(`/api/episodes/${encodeURIComponent(episodeId)}/generation-handoffs/${encodeURIComponent(handoffId)}/generate`,
+          json("POST", { confirm_generation: true }));
       },
       importGeneration: (episodeId, handoffId, file) => send(
         `/api/episodes/${encodeURIComponent(episodeId)}/generation-handoffs/${encodeURIComponent(handoffId)}/import?filename=${encodeURIComponent(file.name)}`,

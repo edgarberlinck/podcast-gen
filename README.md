@@ -13,6 +13,20 @@ python app.py
 
 The API listens on `http://127.0.0.1:8000` by default. Keep it bound to loopback for local use. Configure `STUDIO_HOST`, `STUDIO_PORT`, `STUDIO_DATA_DIR`, and `LOG_LEVEL` as needed. The default data directory is `./data/`. The directory contains `studio.sqlite3` and an `episodes/<uuid>/` folder for each episode. Back up the entire data directory while the server is stopped.
 
+## Docker
+
+Docker Compose builds the app and runs it at `http://127.0.0.1:8000`:
+
+```sh
+make up
+make logs
+make down
+```
+
+`make up` creates `.env` from `.env.example` if needed. Add the LLM and Transistor credentials to `.env`; Compose passes them to the running container. They are **not** build arguments or image contents. `.env` is excluded from Git and the Docker build context. The episode database and audio are persisted in `./data`. If port 8000 is occupied, set `STUDIO_PORT` in `.env` to an available host port.
+
+The image includes Codex CLI. Before using Fish Audio generation, authenticate the host Codex CLI with `codex mcp login fish-audio`; Compose mounts the host Codex home (default `~/.codex`) at `/codex` so the container can use its OAuth session. Set `CODEX_HOME_HOST` in `.env` if the host Codex home is elsewhere. The container runs with the host UID/GID so it can write its local data and OAuth refresh state.
+
 ## Development checks
 
 ```sh
@@ -85,7 +99,11 @@ The responsive studio and Phase 3 narration-review UI are served by the same loc
 
 ## Phase 4 audio generation and review interface
 
-The generation screen presents the exact saved, approved Fish Audio script, its approval time/digest, and a registered voice selection that is persisted only after the user saves it. It displays the documented Drama 3 preference (`drama-3`) but does not offer extra parameters because the actual MCP schema and model-selector support remain unverified. Preparing a handoff requires explicit confirmation and only creates a local snapshot; any paid Fish operation still requires the user to inspect and separately confirm the request in Codex. The language switch changes interface copy only, not episode content language.
+The generation screen presents the exact saved, approved Fish Audio script, its approval time/digest, and a registered voice selection that is persisted only after the user saves it. Preparing a request creates a local snapshot. The app then starts a Codex CLI agent using the user's authenticated `fish-audio` MCP server and requests a free `text_to_speech` quote (`dry_run: true`, model `drama-3`). It shows the quoted credits and requires a separate explicit confirmation before starting paid generation. Each operation enables only its required Fish Audio MCP tools; voice cloning uses the temporary-upload and clone tools. Completed audio is downloaded from a trusted Fish Audio HTTPS host and imported automatically as a new, pending-review local version. The language switch changes interface copy only, not episode content language.
+
+To enable generation, authenticate the Fish Audio MCP server as documented at [Fish Audio MCP](https://docs.fish.audio/overview/mcp) with `codex mcp login fish-audio`. With Docker, the host Codex home is mounted into the container; without Docker, install Codex CLI and authenticate it in the same OS account that runs `python app.py`. The image has Codex CLI on `PATH`; `CODEX_BIN` can override the executable. Narration suggestions continue to use their separate `LLM_API_KEY` provider configuration.
+
+The voice library can create a Fish Audio clone from a WAV, MP3, M4A, or OPUS file, or from a microphone recording converted to WAV. It sends the sample through the authenticated MCP only after the user confirms ownership/permission. The app does not persist the sample; Fish Audio says clone uploads use temporary storage for up to seven days. The MCP recommends 10–60 seconds (270 seconds maximum), one speaker, clean audio, steady mic distance, and modest delivery variation; whispering or large changes in volume can reduce consistency. Private visibility is selected by default; unlisted voices are usable by anyone with the ID, while public voices appear in Fish Audio's library.
 
 The local audio history retains each import, shows voice/model/import timestamp and the native player's duration when browser metadata is available, and provides playback and download controls. New imported takes remain pending until an explicit approve/reject confirmation. Approved and rejected files stay in history; a fresh import gets its own generation directory and cannot replace an approved recording. The UI displays the intended handoff provenance but cannot prove what a user-run Codex operation actually synthesized. Audio bytes in automated UI tests are deterministic placeholders, not playable Fish Audio output.
 
@@ -128,17 +146,17 @@ git diff --check
 
 Results: 126 Python tests, 13 Node tests, and 12 Chromium E2E tests passed. Python coverage was 95% including tests (`app.py` 89%, `narration.py` 92%); JavaScript unit line coverage was 100% for `api.js` and 44.53% for `app.js`, still below the 80% target. Ruff and syntax checks passed; npm reported zero vulnerabilities. There are no npm lint/build scripts and no UI build step. Tests used local deterministic fixtures, with no live MCP/provider call, paid generation, deployment, or publishing. Cross-browser and full WCAG checks remain unverified.
 
-## Fish Audio workflow boundary (Phase 4, user-mediated)
+## Fish Audio generation workflow (Codex MCP)
 
-The local studio implements a manual Codex handoff and local audio import only. It never starts generation, invokes Codex, connects to Fish Audio/MCP, calls the Fish REST API, or publishes. Starting audio generation requires a separate explicit user action in the authenticated Codex session after the user inspects the actual MCP tool schema. This environment did not expose a live MCP connection or schema, so no MCP tool names/arguments are assumed.
+To generate, save and explicitly approve the exact Fish Audio script, register/select an available voice in the matching episode language, then choose **Prepare generation**. The local server snapshots the approved script and selected voice. **Get free quote** runs a Codex agent against Fish Audio's `text_to_speech` MCP tool with `dry_run: true`; no audio is generated or charged at this stage. The app displays the returned quote. **Generate audio** requires a separate explicit confirmation, after which a second Codex agent invokes the same MCP tool exactly once with `dry_run: false`, polls `get_speech` if needed, downloads the resulting MP3 from an HTTPS `*.fish.audio` URL, and stores it in a fresh immutable `generations/<uuid>/` directory. The imported take starts pending review, with voice/model/script-digest provenance; existing audio bytes are never overwritten.
 
-To prepare a handoff, save and explicitly approve the exact Fish Audio script, register/select an available voice that matches the episode language, then open the episode's Fish-script review and choose **Prepare audio handoff**. The server requires a second explicit confirmation and snapshots the exact script and SHA-256, selected registered voice ID, Fish voice identifier, and model preference `Fish Audio Drama 3` (`drama-3`). It does not update the episode to “Generating Audio”. The downloaded JSON is a local handoff record, not an MCP request schema. In Codex, inspect its live Fish tool schema, use only documented fields, and confirm any generation there. The model identifier is a documented Fish preference, but its acceptance as an MCP parameter is unverified; do not infer that the MCP will honor it.
-
-After the user has manually generated and downloaded an output, select it on that pending handoff and import it. The API validates the local filename/type/size, stores the file in a fresh immutable `generations/<uuid>/` directory, associates provenance to the handoff, and records the model, selected voice, approved-script digest, and review status. Existing audio bytes are never overwritten. Each handoff accepts one import; another attempt needs a new explicitly prepared handoff. A failed Codex/MCP attempt can be recorded by category without retaining vendor error details; import validation failures leave the handoff retryable. Imported takes start pending human audio review; approval/rejection are explicit and preserve the local audio file. Imported files are playable and downloadable locally.
+The Codex MCP server must be named `fish-audio` and OAuth-authenticated for the same local OS account running the studio. The app uses that configured connection; it does not store or forward Fish Audio credentials. A generation failure is not automatically retried because the provider may already have charged for a completed result. Check Fish Audio history before creating a new request.
 
 Additional API routes:
 
 - `POST /api/episodes/{id}/generation-handoffs` with `{"confirm_handoff":true}` prepares the immutable local request snapshot; `GET` lists handoffs and their `prepared`, `imported`, or `failed` status.
+- `POST /api/episodes/{id}/generation-handoffs/{handoff-id}/quote` with `{"confirm_quote":true}` starts a Codex agent that requests a free Fish Audio quote; `GET` on handoffs reports quote/generation state.
+- `POST /api/episodes/{id}/generation-handoffs/{handoff-id}/generate` with `{"confirm_generation":true}` starts paid generation only after a quote is ready and the user confirms; the result is automatically downloaded and imported.
 - `POST /api/episodes/{id}/generation-handoffs/{handoff-id}/import?filename=take.mp3` accepts raw local audio bytes and creates a new generation (same 500 MiB/audio extension limits as the local library).
 - `POST /api/episodes/{id}/generation-handoffs/{handoff-id}/failure` records an explicit failure category (`mcp_error`, `cancelled`, `output_unavailable`, `other`); no arbitrary provider error text is saved.
 - `POST /api/files/{file-id}/review` with `{"status":"approved"|"rejected","confirm_review":true}` records an explicit review decision without changing/deleting audio bytes.

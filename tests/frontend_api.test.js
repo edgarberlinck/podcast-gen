@@ -42,6 +42,32 @@ test("metadata and content use their dedicated local API routes", async () => {
   assert.ok(calls.slice(1).every(({ path }) => !path.endsWith("/original")));
 });
 
+test("voice cloning requires consent and uploads the reference as an audio body", async () => {
+  const calls = [];
+  const api = createApi(async (path, options) => {
+    calls.push({ path, options });
+    return response({ job: { id: "clone-job-1" } }, 202);
+  });
+  const file = { name: "voice sample.wav", type: "audio/wav" };
+  const details = {
+    display_name: "Narrator", language: "pt", visibility: "private", description: "Warm",
+  };
+  assert.throws(() => api.cloneVoice(file, details, false), /autorização/i);
+  assert.equal(calls.length, 0);
+  await api.cloneVoice(file, details, true);
+  await api.voiceCloneJob("clone-job-1");
+
+  const url = new URL(calls[0].path, "http://localhost");
+  assert.equal(url.pathname, "/api/voices/clone");
+  assert.equal(url.searchParams.get("consent"), "true");
+  assert.equal(url.searchParams.get("filename"), file.name);
+  assert.equal(url.searchParams.get("visibility"), "private");
+  assert.equal(url.searchParams.get("description"), details.description);
+  assert.equal(calls[0].options.body, file);
+  assert.equal(calls[0].options.headers["Content-Type"], "audio/wav");
+  assert.equal(calls[1].path, "/api/voice-clone-jobs/clone-job-1");
+});
+
 test("editing an existing original requires affirmative confirmation", async () => {
   const calls = [];
   const api = createApi(async (path, options) => {
@@ -76,21 +102,29 @@ test("suggestion scopes and exact-script approval use separate explicit API oper
   assert.deepEqual(JSON.parse(calls[2].options.body), { content: "saved script", confirm_approval: true });
 });
 
-test("generation handoffs require explicit consent and audio imports stay binary local requests", async () => {
+test("generation quote and paid audio generation require explicit consent", async () => {
   const calls = [];
   const api = createApi(async (path, options) => {
     calls.push({ path, options });
     return response({ handoff: { id: "handoff-1" } });
   });
   assert.throws(() => api.prepareGenerationHandoff("episode/1", false), /confirmação explícita/i);
+  assert.throws(() => api.quoteGeneration("episode/1", "handoff/1", false), /confirmação explícita/i);
+  assert.throws(() => api.generateAudio("episode/1", "handoff/1", false), /confirmação explícita/i);
   await api.prepareGenerationHandoff("episode/1", true);
+  await api.quoteGeneration("episode/1", "handoff/1", true);
+  await api.generateAudio("episode/1", "handoff/1", true);
   const audio = { name: "take one.mp3", type: "audio/mpeg" };
   await api.importGeneration("episode/1", "handoff/1", audio);
   assert.equal(calls[0].path, "/api/episodes/episode%2F1/generation-handoffs");
   assert.deepEqual(JSON.parse(calls[0].options.body), { confirm_handoff: true });
-  assert.equal(calls[1].path, "/api/episodes/episode%2F1/generation-handoffs/handoff%2F1/import?filename=take%20one.mp3");
-  assert.equal(calls[1].options.body, audio);
-  assert.equal(calls[1].options.headers["Content-Type"], "audio/mpeg");
+  assert.equal(calls[1].path, "/api/episodes/episode%2F1/generation-handoffs/handoff%2F1/quote");
+  assert.deepEqual(JSON.parse(calls[1].options.body), { confirm_quote: true });
+  assert.equal(calls[2].path, "/api/episodes/episode%2F1/generation-handoffs/handoff%2F1/generate");
+  assert.deepEqual(JSON.parse(calls[2].options.body), { confirm_generation: true });
+  assert.equal(calls[3].path, "/api/episodes/episode%2F1/generation-handoffs/handoff%2F1/import?filename=take%20one.mp3");
+  assert.equal(calls[3].options.body, audio);
+  assert.equal(calls[3].options.headers["Content-Type"], "audio/mpeg");
 });
 
 test("audio review is explicitly confirmed and failure categories are reported locally", async () => {

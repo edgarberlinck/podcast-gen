@@ -7,6 +7,10 @@
   const importInput = document.getElementById("article-import");
   const statuses = ["Draft", "Preparing Script", "Script Review", "Ready for Generation", "Generating Audio", "Audio Review", "Approved", "Publishing", "Published", "Failed"];
   const FISH_AUDIO_MODEL_LABEL = "Fish Audio Drama 3";
+  const VOICE_SAMPLE_SCRIPTS = Object.freeze({
+    pt: "Olá, meu nome é [diga seu nome]. Hoje, compartilho uma história. Pela manhã, abri a janela e ouvi a cidade despertar: passos na calçada, uma conversa distante e o vento entre as árvores.\n\nImaginei de onde vinha cada pessoa e para onde ia. Uma pequena curiosidade pode transformar um caminho comum em descoberta.\n\nMais tarde, encontrei uma amiga. Conversamos sobre planos e lembranças, rimos de algo inesperado e o tempo pareceu passar devagar.\n\nNo fim do dia, voltei para casa serena. Nem toda mudança começa com um grande acontecimento; às vezes, basta parar, observar e contar o que sentimos.",
+    en: "Hello, my name is [say your name]. Today, I have a story to share. In the morning, I opened the window and heard the city waking up: footsteps on the sidewalk, a distant conversation, and wind moving through the trees.\n\nI wondered where each person had come from and where they were going. A small question can turn an ordinary walk into a discovery.\n\nLater, I met a friend. We talked about plans and memories, laughed at something unexpected, and time seemed to slow down.\n\nAt the end of the day, I returned home feeling calm. Not every change begins with a dramatic event; sometimes it is enough to pause, notice, and describe what we feel.",
+  });
   let pageRequest = 0;
   let currentRoute = "";
   let originalUnlocked = false;
@@ -17,11 +21,20 @@
   let interfaceLanguage = null;
   let generationLanguage = null;
   let pendingAudioReview = null;
+  let voiceSampleFile = null;
+  let voiceRecorder = null;
+  let voiceRecorderStream = null;
+  let voiceRecorderChunks = [];
+  let voiceRecorderTimer = null;
+  let voiceRecorderStopHandler = null;
+  let voiceSamplePreviewUrl = "";
+  let voiceClonePollTimer = null;
   const confirmedTransistorDrafts = new Set();
 
   const h = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const langName = (code) => code === "en" ? "English" : "Português (Brasil)";
   const langShort = (code) => code === "en" ? "EN" : "PT-BR";
+  const fishVisibilityName = (value) => ({ private: "privada", unlist: "não listada", public: "pública", unknown: "não informada" }[value] || value);
   const languageSelect = (selected) => `<select id="episode-language" aria-label="Idioma do conteúdo" required><option value="pt" ${selected === "pt" ? "selected" : ""}>Português (Brasil)</option><option value="en" ${selected === "en" ? "selected" : ""}>English</option></select>`;
   const statusOptions = (selected, includeAll = false) => `${includeAll ? '<option value="">Todos os status</option>' : ""}${statuses.map((status) => `<option value="${h(status)}" ${status === selected ? "selected" : ""}>${h(status)}</option>`).join("")}`;
   const dateLabel = (stamp, locale = "pt-BR") => {
@@ -84,7 +97,9 @@
 
   async function loadRoute() {
     const requestId = ++pageRequest;
-    currentRoute = window.location.hash || "#dashboard";
+    const nextRoute = window.location.hash || "#dashboard";
+    if (currentRoute === "#voices" && nextRoute !== "#voices" && voiceRecorder) discardVoiceRecording();
+    currentRoute = nextRoute;
     scriptReview = null;
     setShellLanguage("pt");
     originalUnlocked = false;
@@ -410,35 +425,50 @@
     const handoffs = handoffResult.handoffs || [];
     const files = fileResult.files || [];
     const labels = english ? {
-      title: "Prepare and review audio", intro: "Manual Codex handoff · local audio import · no automatic provider calls.", locale: "Interface language", handoffStep: "Codex handoff",
-      safety: "Generation starts only after your separate confirmation in Codex.", safetyCopy: "This studio does not connect to Fish Audio, guess MCP arguments, or replace an existing version.",
+      title: "Generate and review audio", intro: "Codex agent · Fish Audio MCP · local audio import.", locale: "Interface language", handoffStep: "Fish Audio generation",
+      safety: "Audio is generated only after you confirm the quoted cost.", safetyCopy: "The app launches Codex with the authenticated Fish Audio MCP and saves each result as a new local version.",
       script: "Exact approved Fish Audio script", voice: "Registered voice", saveVoice: "Save voice selection", model: "Model preference",
       notReady: "Approve the saved Fish Audio script and select an available registered voice before preparing a handoff.",
-      prepare: "Prepare Codex handoff →", confirm: "Prepare a local handoff for this exact approved script and selected voice? No audio will be generated here.",
+      prepare: "Prepare generation →", confirm: "Prepare a generation request for this exact approved script and selected voice?",
       handoffs: "Handoff status", history: "Audio versions", empty: "No local audio versions yet.", duration: "Duration", durationPending: "Loading duration…", durationUnknown: "Duration unavailable",
       approved: "Approved · preserved", rejected: "Rejected · retained", pendingReview: "Awaiting review", version: "Version", generated: "Imported", file: "File", download: "Download audio", playUnsupported: "Audio playback is not supported by this browser.",
-      import: "Import the audio file returned by your manual Codex workflow", choose: "Choose audio file", importButton: "Import as a new version",
-      manual: "In Codex, inspect the actual Fish Audio MCP schema and use only its documented fields. Confirm generation explicitly in Codex. The configured MCP connection and model selector are not verified here.",
-      failure: "Record a Codex/MCP failure", recordFailure: "Record failure", pending: "Awaiting your action in Codex", imported: "Audio imported · a separate local version was created", failed: "Handoff failed", noMcp: "No MCP call or generation was started by this studio.",
+      import: "Import a file manually", choose: "Choose audio file", importButton: "Import as a new version",
+      manual: "Generation runs through the configured fish-audio MCP server in Codex. The quoted cost may change before Fish Audio processes the request.",
+      failure: "Generation failed", recordFailure: "Record failure", pending: "Ready to request a free quote", imported: "Audio generated and saved locally · awaiting review", failed: "Generation failed", noMcp: "Codex uses the authenticated Fish Audio MCP connection.",
       review: "Review audio version", approve: "Approve this audio version?", reject: "Reject this audio version? The local file will remain preserved.", confirmReview: "Confirm review", cancelReview: "Keep listening", preserve: "Other versions remain unchanged. This does not publish or upload the episode.",
-      voiceNone: "No voice selected", voiceUnavailable: "Selected voice is not marked available", scriptApproval: "Script approval", uploadInfo: "The imported file is associated with the approved script and selected voice from this handoff. This studio cannot verify what the Codex operation actually synthesized.", confirmHandoff: "Prepare request for Codex?", cancelHandoff: "Back to review", yesHandoff: "Yes, prepare local handoff", handoffConfirmCopy: "This saves a local snapshot only. No audio is generated here. In Codex, check its live tool schema and confirm any paid generation separately.", generationHelp: "No audio starts here. You must separately review and confirm any generation in Codex.",
+      voiceNone: "No voice selected", voiceUnavailable: "Selected voice is not marked available", scriptApproval: "Script approval", uploadInfo: "Generated from the approved script and selected Fish Audio voice.", confirmHandoff: "Prepare generation request?", cancelHandoff: "Back to review", yesHandoff: "Yes, prepare request", handoffConfirmCopy: "The app will ask Fish Audio for a free quote first. No audio is generated until you confirm the quoted cost.", generationHelp: "A Codex agent will request a quote; generation requires a separate confirmation.",
     } : {
-      title: "Preparar e revisar áudio", intro: "Handoff manual no Codex · importação local · nenhuma chamada automática ao provedor.", locale: "Idioma da interface", handoffStep: "Handoff no Codex",
-      safety: "A geração só começa após sua confirmação separada no Codex.", safetyCopy: "Este estúdio não se conecta ao Fish Audio, não presume argumentos MCP e não substitui versões existentes.",
+      title: "Gerar e revisar áudio", intro: "Agente Codex · MCP do Fish Audio · importação local.", locale: "Idioma da interface", handoffStep: "Geração Fish Audio",
+      safety: "O áudio só é gerado após sua confirmação do custo cotado.", safetyCopy: "O app inicia o Codex com o MCP autenticado do Fish Audio e salva cada resultado como uma nova versão local.",
       script: "Script Fish Audio exato aprovado", voice: "Voz registrada", saveVoice: "Salvar seleção de voz", model: "Preferência de modelo",
       notReady: "Aprove o script Fish Audio salvo e selecione uma voz registrada disponível antes de preparar o handoff.",
-      prepare: "Preparar handoff no Codex →", confirm: "Preparar um handoff local para este script aprovado e esta voz? Nenhum áudio será gerado aqui.",
+      prepare: "Preparar geração →", confirm: "Preparar uma solicitação para este script aprovado e esta voz?",
       handoffs: "Status dos handoffs", history: "Versões de áudio", empty: "Ainda não há versões de áudio locais.", duration: "Duração", durationPending: "Carregando duração…", durationUnknown: "Duração indisponível",
       approved: "Aprovada · preservada", rejected: "Rejeitada · mantida", pendingReview: "Aguardando revisão", version: "Versão", generated: "Importada", file: "Arquivo", download: "Baixar áudio", playUnsupported: "Este navegador não oferece suporte à reprodução de áudio.",
-      import: "Importe o arquivo de áudio obtido pelo fluxo manual no Codex", choose: "Escolher arquivo de áudio", importButton: "Importar como nova versão",
-      manual: "No Codex, inspecione o esquema real do Fish Audio MCP e use somente campos documentados. Confirme a geração explicitamente no Codex. A conexão MCP e o seletor de modelo não foram verificados aqui.",
-      failure: "Registrar uma falha do Codex/MCP", recordFailure: "Registrar falha", pending: "Aguardando sua ação no Codex", imported: "Áudio importado · uma nova versão local foi criada", failed: "Handoff falhou", noMcp: "Este estúdio não iniciou chamada MCP nem geração.",
+      import: "Importar arquivo manualmente", choose: "Escolher arquivo de áudio", importButton: "Importar como nova versão",
+      manual: "A geração usa o servidor fish-audio configurado no Codex. O custo cotado pode mudar antes do processamento pelo Fish Audio.",
+      failure: "Falha na geração", recordFailure: "Registrar falha", pending: "Pronto para solicitar uma cotação gratuita", imported: "Áudio gerado e salvo localmente · aguardando revisão", failed: "Falha na geração", noMcp: "O Codex usa a conexão autenticada do MCP do Fish Audio.",
       review: "Revisar versão de áudio", approve: "Aprovar esta versão de áudio?", reject: "Rejeitar esta versão de áudio? O arquivo local será preservado.", confirmReview: "Confirmar revisão", cancelReview: "Continuar ouvindo", preserve: "As outras versões permanecem inalteradas. Isto não publica nem envia o episódio.",
-      voiceNone: "Nenhuma voz selecionada", voiceUnavailable: "A voz selecionada não está marcada como disponível", scriptApproval: "Aprovação do script", uploadInfo: "O arquivo importado é associado ao script aprovado e à voz selecionada neste handoff. Este estúdio não pode verificar o que a operação no Codex realmente sintetizou.", confirmHandoff: "Preparar solicitação para o Codex?", cancelHandoff: "Voltar à revisão", yesHandoff: "Sim, preparar handoff local", handoffConfirmCopy: "Isto salva apenas um snapshot local. Nenhum áudio é gerado aqui. No Codex, confira o esquema ativo e confirme qualquer geração paga separadamente.", generationHelp: "Nenhum áudio começa aqui. Você deve revisar e confirmar qualquer geração separadamente no Codex.",
+      voiceNone: "Nenhuma voz selecionada", voiceUnavailable: "A voz selecionada não está marcada como disponível", scriptApproval: "Aprovação do script", uploadInfo: "Gerado com o script aprovado e a voz selecionada no Fish Audio.", confirmHandoff: "Preparar solicitação de geração?", cancelHandoff: "Voltar à revisão", yesHandoff: "Sim, preparar solicitação", handoffConfirmCopy: "O app solicitará primeiro uma cotação gratuita ao Fish Audio. O áudio só será gerado após você confirmar o custo.", generationHelp: "Um agente Codex solicitará a cotação; a geração exige confirmação separada.",
     };
     const statusText = (status) => status === "prepared" ? labels.pending : status === "imported" ? labels.imported : labels.failed;
     const voiceOptions = matchingVoices.map((item) => `<option value="${h(item.id)}" ${item.id === episode.selected_voice_id ? "selected" : ""}>${h(item.display_name)} · ${langShort(item.language)} · ${h(item.availability)}</option>`).join("");
-    const handoffRows = handoffs.length ? handoffs.map((item) => `<article class="generation-handoff"><strong>${h(statusText(item.status))}</strong><span>${h(item.voice_name)} · Drama 3 / ${h(item.model)} · ${h(dateLabel(item.created_at, english ? "en-US" : "pt-BR"))}</span>${item.failure_code ? `<small>${h(item.failure_code)}</small>` : ""}${item.status === "prepared" ? `<label>${h(labels.failure)} <select data-handoff-failure="${h(item.id)}"><option value="mcp_error">${english ? "MCP error" : "Erro MCP"}</option><option value="cancelled">${english ? "Cancelled" : "Cancelado"}</option><option value="output_unavailable">${english ? "Output unavailable" : "Arquivo indisponível"}</option><option value="other">${english ? "Other" : "Outro"}</option></select></label><button class="button secondary small" data-action="record-handoff-failure" data-id="${h(item.id)}">${h(labels.recordFailure)}</button><div class="generation-error" data-handoff-error="${h(item.id)}" role="alert"></div><p>${h(labels.manual)}</p><a download="codex-handoff-${h(item.id)}.json" href="data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify({ handoff_id: item.id, script: item.script, script_sha256: item.script_sha256, voice: { display_name: item.voice_name, fish_audio_id: item.fish_audio_id }, model_preference: { label: FISH_AUDIO_MODEL_LABEL, identifier: item.model }, instructions: labels.manual }, null, 2))}">${english ? "Download handoff JSON" : "Baixar handoff JSON"}</a><label>${h(labels.import)}<input type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,audio/*" data-generation-file="${h(item.id)}"></label>` : ""}</article>`).join("") : `<p>${h(labels.empty)}</p>`;
+    const handoffRows = handoffs.length ? handoffs.map((item) => {
+      const run = item.generation_run;
+      const runStatus = run && run.status;
+      const runText = runStatus === "quoting" ? (english ? "Getting Fish Audio quote…" : "Obtendo cotação do Fish Audio…")
+        : runStatus === "quoted" ? (english ? "Quote ready" : "Cotação pronta")
+          : runStatus === "generating" ? (english ? "Generating audio with Fish Audio…" : "Gerando áudio no Fish Audio…")
+            : runStatus === "imported" ? labels.imported
+              : runStatus === "failed" ? `${labels.failed}: ${run.error_message || run.failure_code || ""}`
+                : item.status === "imported" ? labels.imported : item.status === "failed" ? labels.failed : labels.pending;
+      const quote = runStatus === "quoted" ? `<p><strong>${english ? "Estimated cost" : "Custo estimado"}: ${h(Number(run.estimated_credits).toLocaleString(english ? "en-US" : "pt-BR"))} ${english ? "credits" : "créditos"}</strong></p><p>${h(run.quote_summary)}</p><button class="button primary small" data-action="generate-audio" data-id="${h(item.id)}" data-credits="${h(run.estimated_credits)}">${english ? "Generate audio" : "Gerar áudio"}</button>` : "";
+      const action = !run && item.status === "prepared"
+        ? `<button class="button secondary small" data-action="quote-generation" data-id="${h(item.id)}">${english ? "Get free quote" : "Solicitar cotação grátis"}</button>`
+        : runStatus === "quoting" || runStatus === "generating"
+          ? `<p role="status">${h(runText)}</p>` : quote;
+      return `<article class="generation-handoff"><strong>${h(runText)}</strong><span>${h(item.voice_name)} · Drama 3 / ${h(item.model)} · ${h(dateLabel(item.created_at, english ? "en-US" : "pt-BR"))}</span>${run && run.failure_code ? `<small>${h(run.failure_code)}</small>` : ""}${run && run.error_message ? `<p class="generation-error" role="alert">${h(run.error_message)}</p>` : ""}${action}<div class="generation-error" data-handoff-error="${h(item.id)}" role="alert"></div></article>`;
+    }).join("") : `<p>${h(labels.empty)}</p>`;
     const reviewStatus = (status) => status === "approved" ? labels.approved : status === "rejected" ? labels.rejected : labels.pendingReview;
     const history = files.length ? files.map((item, index) => `<article class="audio-version" data-audio-version="${h(item.id)}"><div class="audio-version-heading"><strong>${h(labels.version)} ${files.length - index} · ${h(reviewStatus(item.approval_status))}</strong>${item.approval_status === "approved" ? `<span class="approved-lock">🔒 ${h(labels.approved)}</span>` : ""}</div><p>${h(item.voice_name || item.fish_audio_id || (english ? "Local audio import" : "Importação local de áudio"))} ${item.model ? `· Drama 3 / ${h(item.model)}` : ""}</p><p>${h(labels.generated)} · <time datetime="${h(item.created_at)}">${h(dateLabel(item.created_at, english ? "en-US" : "pt-BR")) || "—"}</time></p><p>${h(labels.file)} · ${h(item.filename)} · ${Number(item.size_bytes).toLocaleString(english ? "en-US" : "pt-BR")} bytes</p>${item.script_sha256 ? `<code>SHA-256 · ${h(item.script_sha256)}</code>` : ""}<audio controls preload="metadata" data-audio-duration="${h(item.id)}" aria-label="${h(labels.version)} ${files.length - index}" src="/api/files/${encodeURIComponent(item.id)}">${h(labels.playUnsupported)}</audio><p class="audio-duration" data-duration-label="${h(item.id)}">${h(labels.duration)} · ${h(labels.durationPending)}</p><a class="audio-download" download="${h(item.filename)}" href="/api/files/${encodeURIComponent(item.id)}">↓ ${h(labels.download)}</a>${item.handoff_id && item.approval_status !== "approved" && item.approval_status !== "rejected" ? `<div class="audio-review-actions"><button class="button secondary small" data-action="review-audio" data-id="${h(item.id)}" data-status="rejected">${english ? "Reject version" : "Rejeitar versão"}</button><button class="button small" data-action="review-audio" data-id="${h(item.id)}" data-status="approved">${english ? "Approve version" : "Aprovar versão"}</button></div>` : item.approval_status === "rejected" ? `<strong class="rejected-label">${h(labels.rejected)}</strong>` : ""}${item.handoff_id ? `<p class="audio-provenance">${h(labels.uploadInfo)}</p>` : ""}</article>`).join("") : `<p>${h(labels.empty)}</p>`;
     const selectedVoiceSummary = voice ? `${h(voice.display_name)} · ${h(voice.fish_audio_id)} · ${h(voice.availability)}` : h(labels.voiceNone);
@@ -448,12 +478,13 @@
       <div class="generation-columns"><section class="panel generation-setup"><span class="eyebrow">${h(labels.script)}</span><textarea readonly aria-label="${h(labels.script)}">${h(episode.fish_audio_script)}</textarea>
        <p class="generation-script-state">${approved ? `✓ ${h(labels.scriptApproval)} · ${h(dateLabel(episode.fish_audio_approved_at, english ? "en-US" : "pt-BR"))}` : h(labels.notReady)}</p>${episode.fish_audio_approved_sha256 ? `<code class="script-digest">SHA-256 · ${h(episode.fish_audio_approved_sha256)}</code>` : ""}<a class="text-link" href="#scripts/${encodeURIComponent(episode.id)}">${english ? "Review approved script" : "Revisar script aprovado"} →</a>
        <h3>${h(labels.voice)}</h3><label class="sr-only" for="generation-voice">${h(labels.voice)}</label><div class="voice-selection"><select id="generation-voice" ${matchingVoices.length ? "" : "disabled"}><option value="">${h(labels.voiceNone)}</option>${voiceOptions}</select><button class="button secondary small" data-action="save-generation-voice" ${matchingVoices.length && episode.selected_voice_id ? "" : "disabled"}>${h(labels.saveVoice)}</button></div><p id="generation-voice-summary">${selectedVoiceSummary} ${voice && voice.availability !== "available" ? `· ${h(labels.voiceUnavailable)}` : ""}</p>
-       <h3>${h(labels.model)}</h3><p><strong>Fish Audio Drama 3 · drama-3</strong></p><p class="model-caveat">${h(labels.manual)}</p><p class="muted">${english ? "No additional parameters are exposed because the live MCP schema is unknown." : "Nenhum parâmetro adicional é exibido porque o esquema MCP ativo é desconhecido."}</p>
+       <h3>${h(labels.model)}</h3><p><strong>Fish Audio Drama 3 · drama-3</strong></p><p class="model-caveat">${h(labels.manual)}</p>
        <button class="button primary" data-action="prepare-handoff" data-script-ready="${approved}" data-episode-language="${h(episode.language)}" ${approved && voice && voice.availability === "available" && voice.language === episode.language ? "" : "disabled"}>${h(labels.prepare)}</button><p class="field-help">${h(labels.generationHelp)}</p><div class="generation-error" id="generation-error" role="alert" aria-live="assertive"></div>
       </section><section class="panel handoff-panel"><h2>${h(labels.handoffs)}</h2>${handoffRows}</section></div>
       <section class="panel generation-history"><h2>${h(labels.history)}</h2><p class="muted">${english ? "Every import receives a new directory. Existing and approved audio files are never replaced." : "Cada importação recebe uma nova pasta. Áudios existentes e aprovados nunca são substituídos."}</p>${history}</section>
       <div class="heading-actions"><a class="button secondary" href="#scripts/${encodeURIComponent(episode.id)}">${english ? "Back to script review" : "Voltar à revisão do script"}</a><a class="button" href="#transistor/${encodeURIComponent(episode.id)}">${english ? "Transistor publishing →" : "Publicação no Transistor →"}</a></div>
-      <dialog id="handoff-confirm-dialog" class="approval-dialog" aria-labelledby="handoff-confirm-title"><form method="dialog"><p class="eyebrow">${english ? "EXPLICIT ACTION · STILL NO GENERATION" : "AÇÃO EXPLÍCITA · AINDA SEM GERAÇÃO"}</p><h2 id="handoff-confirm-title">${h(labels.confirmHandoff)}</h2><p>${h(episode.title)} · ${h(voice ? voice.display_name : labels.voiceNone)} · Fish Audio Drama 3 / drama-3</p><p>${h(labels.confirm)}</p><p>${h(labels.handoffConfirmCopy)}</p><div class="dialog-actions"><button class="button secondary" value="cancel">${h(labels.cancelHandoff)}</button><button class="button primary" value="confirm" data-action="confirm-handoff">${h(labels.yesHandoff)}</button></div></form></dialog>
+      <dialog id="handoff-confirm-dialog" class="approval-dialog" aria-labelledby="handoff-confirm-title"><form method="dialog"><p class="eyebrow">${english ? "PREPARE REQUEST · NO AUDIO YET" : "PREPARAR SOLICITAÇÃO · SEM ÁUDIO AINDA"}</p><h2 id="handoff-confirm-title">${h(labels.confirmHandoff)}</h2><p>${h(episode.title)} · ${h(voice ? voice.display_name : labels.voiceNone)} · Fish Audio Drama 3 / drama-3</p><p>${h(labels.confirm)}</p><p>${h(labels.handoffConfirmCopy)}</p><div class="dialog-actions"><button class="button secondary" value="cancel">${h(labels.cancelHandoff)}</button><button class="button primary" value="confirm" data-action="confirm-handoff">${h(labels.yesHandoff)}</button></div></form></dialog>
+      <dialog id="generation-confirm-dialog" class="approval-dialog" aria-labelledby="generation-confirm-title"><form method="dialog"><p class="eyebrow">${english ? "PAID FISH AUDIO GENERATION" : "GERAÇÃO PAGA NO FISH AUDIO"}</p><h2 id="generation-confirm-title">${english ? "Generate this audio?" : "Gerar este áudio?"}</h2><p id="generation-confirm-cost"></p><p>${h(labels.manual)}</p><div class="dialog-actions"><button class="button secondary" value="cancel">${h(labels.cancelHandoff)}</button><button class="button primary" value="confirm" data-action="confirm-audio-generation">${english ? "Confirm and generate" : "Confirmar e gerar"}</button></div></form></dialog>
       <dialog id="audio-review-dialog" class="approval-dialog" aria-labelledby="audio-review-title"><form method="dialog"><p class="eyebrow">${english ? "EXPLICIT AUDIO REVIEW · NO PUBLISHING" : "REVISÃO EXPLÍCITA · SEM PUBLICAÇÃO"}</p><h2 id="audio-review-title">${h(labels.review)}</h2><p id="audio-review-prompt"></p><p>${h(labels.preserve)}</p><div class="dialog-actions"><button class="button secondary" value="cancel" data-action="cancel-audio-review">${h(labels.cancelReview)}</button><button class="button primary" value="confirm" data-action="confirm-audio-review">${h(labels.confirmReview)}</button></div></form></dialog>`;
     view.querySelectorAll("audio[data-audio-duration]").forEach((player) => {
       const output = Array.from(view.querySelectorAll("[data-duration-label]")).find((item) => item.dataset.durationLabel === player.dataset.audioDuration);
@@ -464,6 +495,11 @@
       player.addEventListener("error", () => { output.textContent = `${labels.duration} · ${labels.durationUnknown}`; }, { once: true });
       if (Number.isFinite(player.duration) && player.duration > 0) output.textContent = `${labels.duration} · ${formatAudioDuration(player.duration)}`;
     });
+    if (handoffs.some((item) => item.generation_run && ["quoting", "generating"].includes(item.generation_run.status))) {
+      window.setTimeout(() => {
+        if (window.location.hash === `#generation/${encodeURIComponent(id)}`) loadRoute();
+      }, 2000);
+    }
   }
 
   async function renderTransistor(id, requestId) {
@@ -542,13 +578,52 @@
     setNav("voices", "Biblioteca de vozes");
     const result = await api.voices();
     if (requestId !== pageRequest) return;
+    if (voiceSamplePreviewUrl) URL.revokeObjectURL(voiceSamplePreviewUrl);
+    voiceSamplePreviewUrl = "";
     const voices = result.voices || [];
     currentVoices = voices;
-    const cards = voices.map((voice) => `<article class="voice-card"><div class="voice-card-head"><span class="voice-initial" aria-hidden="true">${h((voice.display_name || "?").slice(0, 1).toLocaleUpperCase())}</span><div><h3>${h(voice.display_name)}</h3><div class="voice-card-meta"><span class="tag">${langShort(voice.language)}</span><span>Tipo: ${h({ external: "externa", own: "própria", other: "outra" }[voice.voice_type] || voice.voice_type)}</span><span>Status: ${h({ available: "disponível", unavailable: "indisponível", unknown: "desconhecido" }[voice.availability] || voice.availability)}</span></div></div></div><p>${h(voice.description || "Sem descrição adicionada.")}</p><span class="voice-id">ID · ${h(voice.fish_audio_id)}</span><p class="muted">Registrada localmente · ${h(dateLabel(voice.registered_at))}</p></article>`).join("");
-    view.innerHTML = `${heading("Biblioteca de vozes", "Guarde identificadores e metadados informados por você — sem conectar ao Fish Audio.", '<button class="button primary" data-action="register-scroll">+ Registrar voz</button>')}
-      <div class="info-strip" style="background:#eaf1e9;color:#4e6659"><strong>CATÁLOGO LOCAL</strong><br>Clonagem, pesquisa remota e teste de áudio não fazem parte deste núcleo. Status descreve seus metadados locais, não uma verificação externa.</div>
-      ${cards ? `<div class="voice-grid">${cards}</div>` : `<div class="empty-state"><h2>Nenhuma voz registrada</h2><p>Adicione localmente um identificador Fish Audio e seus metadados para selecioná-lo em um episódio.</p></div>`}
-      <section id="register" class="panel"><h2>Registrar uma voz</h2><p class="muted">Identificador, idioma e descrição são informados por você e salvos neste dispositivo.</p><div class="registration-layout"><form id="voice-form" class="registration-form" novalidate>
+    const cards = voices.map((voice) => `<article class="voice-card">
+      <div class="voice-card-head">
+        <span class="voice-initial" aria-hidden="true">${h((voice.display_name || "?").slice(0, 1).toLocaleUpperCase())}</span>
+        <div class="voice-card-title">
+          <div class="voice-card-titleline"><h3>${h(voice.display_name)}</h3><span class="tag">${langShort(voice.language)}</span></div>
+          <div class="voice-card-meta">
+            <span class="voice-chip">${h({ external: "Externa", own: "Própria", other: "Outra" }[voice.voice_type] || voice.voice_type)}</span>
+            <span class="voice-chip ${voice.availability === "available" ? "is-available" : ""}">${h({ available: "Disponível", unavailable: "Indisponível", unknown: "Status desconhecido" }[voice.availability] || voice.availability)}</span>
+            ${voice.fish_audio_visibility ? `<span class="voice-chip is-visibility">Fish Audio · ${h(fishVisibilityName(voice.fish_audio_visibility))}</span>` : ""}
+          </div>
+        </div>
+      </div>
+      <p class="voice-description">${h(voice.description || "Sem descrição adicionada.")}</p>
+      <footer class="voice-card-footer"><span class="voice-id"><span>ID FISH AUDIO</span>${h(voice.fish_audio_id)}</span><span class="voice-added">Registrada · ${h(dateLabel(voice.registered_at))}</span></footer>
+    </article>`).join("");
+    const activeJobId = window.sessionStorage.getItem("voiceCloneJobId");
+    view.innerHTML = `${heading("Biblioteca de vozes", "Crie uma voz própria ou organize seus IDs Fish Audio.", '<button class="button subtle" data-action="register-scroll">Registrar ID existente</button>')}
+      <section class="panel voice-clone-panel">
+        <header class="voice-clone-heading"><div><span class="eyebrow">FISH AUDIO · CLONAGEM</span><h2>Criar uma voz</h2><p>Envie uma gravação autorizada ou grave direto no microfone.</p></div><div class="voice-duration"><strong>10–60 segundos</strong><span>tempo recomendado</span></div></header>
+        <div class="voice-guidance">
+          <div><span class="voice-guidance-number">01</span><p><strong>Uma voz, sem ruído</strong><span>Fale com volume e distância constantes para um resultado mais fiel.</span></p></div>
+          <div><span class="voice-guidance-number">02</span><p><strong>Privada por padrão</strong><span>O áudio vai ao Fish Audio pelo MCP; o estúdio não guarda a amostra.</span></p></div>
+        </div>
+        <form id="voice-clone-form" class="registration-form">
+          <div class="form-field voice-field-name"><label for="voice-clone-name">Nome da voz *</label><input id="voice-clone-name" required maxlength="200" placeholder="Ex.: Lia — voz principal"></div>
+          <div class="form-field voice-field-language"><label for="voice-clone-language">Idioma *</label><select id="voice-clone-language" required><option value="pt">Português (Brasil)</option><option value="en">English</option></select></div>
+          <div class="form-field voice-field-visibility"><label for="voice-clone-visibility">Visibilidade no Fish Audio</label><select id="voice-clone-visibility"><option value="private">Privada — somente este workspace</option><option value="unlist">Não listada — qualquer pessoa com o ID</option><option value="public">Pública — biblioteca do Fish Audio</option></select></div>
+          <div class="form-field full voice-script-field"><label for="voice-clone-script">Roteiro de gravação <span>opcional</span></label><textarea id="voice-clone-script" rows="7" maxlength="10000">${h(VOICE_SAMPLE_SCRIPTS.pt)}</textarea><span class="field-help">Leia normalmente, depois com acolhimento, curiosidade e reflexão — sempre em volume natural. Sussurros podem alterar o timbre principal. O roteiro é só um guia; o Fish Audio recebe apenas o áudio.</span></div>
+          <div class="voice-sample-options form-field full">
+            <div class="voice-source-card"><label for="voice-sample-file">Enviar um arquivo</label><p>WAV, MP3, M4A ou OPUS · até 50 MiB</p><input id="voice-sample-file" type="file" accept=".wav,.mp3,.m4a,.opus,audio/wav,audio/mpeg,audio/mp4,audio/ogg"><span id="voice-sample-name" class="field-help">Nenhum arquivo selecionado.</span></div>
+            <div class="voice-source-card"><span class="voice-source-label">Gravar agora</span><p>Use o microfone do dispositivo · até 60 s</p><div class="recording-controls"><button class="button secondary" type="button" data-action="start-voice-recording">Gravar</button><button class="button secondary" type="button" data-action="stop-voice-recording" hidden>Parar</button><span id="voice-record-status" class="field-help" role="status">A gravação será convertida para WAV.</span></div></div>
+          </div>
+          <audio id="voice-sample-preview" controls hidden></audio>
+          <div class="voice-consent form-field full"><label><input id="voice-clone-consent" type="checkbox" required><span>Confirmo que esta voz é minha ou tenho autorização para cloná-la e autorizo o envio da gravação ao Fish Audio.</span></label></div>
+          <div class="voice-clone-submit form-field full"><p>O Fish Audio informa que mantém os arquivos temporários por até 7 dias. A clonagem pelo MCP não gera custo, segundo a documentação do serviço.</p><div><button class="button primary" type="submit">Criar voz</button><div id="voice-clone-status" class="danger-note" role="status" aria-live="polite"></div></div></div>
+        </form>
+      </section>
+      <section class="voice-library-section">
+        <header class="voice-list-heading"><div><span class="eyebrow">SUA COLEÇÃO</span><h2>Vozes registradas</h2><p>Vozes disponíveis para usar nos episódios.</p></div><span class="voice-count">${voices.length} ${voices.length === 1 ? "voz" : "vozes"}</span></header>
+        ${cards ? `<div class="voice-grid">${cards}</div>` : `<div class="empty-state voice-empty-state"><span class="voice-empty-mark" aria-hidden="true">◉</span><h2>Sua biblioteca está vazia</h2><p>Crie uma voz acima ou registre um ID Fish Audio que você já possui.</p></div>`}
+      </section>
+      <details id="register" class="panel voice-manual-panel"><summary><span>Registrar um ID Fish Audio existente</span><span class="voice-manual-hint">Já tem uma voz? Adicione os metadados localmente.</span></summary><p class="muted">Esse registro salva apenas os metadados localmente e não valida a voz.</p><div class="registration-layout"><form id="voice-form" class="registration-form" novalidate>
         <div class="form-field"><label for="voice-name">Nome para exibição *</label><input id="voice-name" required maxlength="200" placeholder="Ex.: Lia — narração principal"></div>
         <div class="form-field"><label for="voice-id">Identificador da voz *</label><input id="voice-id" required maxlength="300" placeholder="Cole o identificador fornecido"></div>
         <div class="form-field"><label for="voice-language">Idioma *</label><select id="voice-language" required><option value="pt">Português (Brasil)</option><option value="en">English</option></select></div>
@@ -556,7 +631,10 @@
         <div class="form-field"><label for="voice-availability">Disponibilidade declarada</label><select id="voice-availability"><option value="unknown">Desconhecida</option><option value="available">Disponível</option><option value="unavailable">Indisponível</option></select></div>
         <div class="form-field full"><label for="voice-description">Descrição</label><textarea id="voice-description" rows="3" maxlength="5000" placeholder="Timbre, ritmo ou notas editoriais — sem dados sensíveis."></textarea></div>
         <div class="form-field full"><button class="button" type="submit">Salvar metadados localmente</button></div><div id="voice-form-error" class="danger-note" role="alert"></div>
-      </form><aside class="helper-card"><span class="eyebrow">Importante</span><h3>Registro não é verificação</h3><p>O estúdio não se conecta ao Fish Audio nem valida a voz. Insira um identificador que você já possui. A disponibilidade é uma anotação local.</p></aside></div></section>`;
+      </form><aside class="helper-card"><span class="eyebrow">Registro manual</span><h3>Sem verificação externa</h3><p>Insira um identificador de voz que você já possui. A disponibilidade é uma anotação local.</p></aside></div></details>`;
+    voiceSampleFile = null;
+    document.getElementById("voice-clone-language").value = "pt";
+    if (activeJobId) pollVoiceCloneJob(activeJobId);
   }
 
   async function saveEpisode() {
@@ -648,6 +726,208 @@
     finally { submit.disabled = false; }
   }
 
+  function setVoiceSample(file) {
+    voiceSampleFile = file;
+    const name = document.getElementById("voice-sample-name");
+    const preview = document.getElementById("voice-sample-preview");
+    if (voiceSamplePreviewUrl) URL.revokeObjectURL(voiceSamplePreviewUrl);
+    voiceSamplePreviewUrl = file ? URL.createObjectURL(file) : "";
+    if (name) name.textContent = file ? `${file.name} · ${(file.size / (1024 * 1024)).toFixed(1)} MiB` : "Nenhum arquivo selecionado.";
+    if (preview) {
+      preview.hidden = !file;
+      if (file) preview.src = voiceSamplePreviewUrl;
+      else preview.removeAttribute("src");
+    }
+  }
+
+  function encodeVoiceSampleWav(audioBuffer) {
+    const targetRate = 16000;
+    const outputLength = Math.ceil(audioBuffer.length * targetRate / audioBuffer.sampleRate);
+    const output = new ArrayBuffer(44 + outputLength * 2);
+    const view = new DataView(output);
+    const writeString = (offset, value) => {
+      for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
+    };
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + outputLength * 2, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, targetRate, true);
+    view.setUint32(28, targetRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, outputLength * 2, true);
+    const channels = Array.from({ length: audioBuffer.numberOfChannels }, (_, index) => audioBuffer.getChannelData(index));
+    for (let index = 0; index < outputLength; index += 1) {
+      const sourcePosition = index * audioBuffer.sampleRate / targetRate;
+      const lower = Math.floor(sourcePosition);
+      const upper = Math.min(lower + 1, audioBuffer.length - 1);
+      const fraction = sourcePosition - lower;
+      let sample = 0;
+      channels.forEach((channel) => {
+        sample += channel[lower] * (1 - fraction) + channel[upper] * fraction;
+      });
+      sample = Math.max(-1, Math.min(1, sample / channels.length));
+      view.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    }
+    return new Blob([output], { type: "audio/wav" });
+  }
+
+  async function startVoiceRecording() {
+    const status = document.getElementById("voice-record-status");
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+        throw new Error("Este navegador não oferece gravação de áudio compatível.");
+      }
+      voiceRecorderStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (currentRoute !== "#voices") {
+        voiceRecorderStream.getTracks().forEach((track) => track.stop());
+        voiceRecorderStream = null;
+        return;
+      }
+      const mimeType = typeof window.MediaRecorder.isTypeSupported === "function"
+        ? ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"]
+          .find((type) => window.MediaRecorder.isTypeSupported(type))
+        : "";
+      voiceRecorder = new window.MediaRecorder(voiceRecorderStream, mimeType ? { mimeType } : undefined);
+      voiceRecorderChunks = [];
+      voiceRecorder.addEventListener("dataavailable", (event) => {
+        if (event.data && event.data.size) voiceRecorderChunks.push(event.data);
+      });
+      voiceRecorderStopHandler = async () => {
+        voiceRecorderStopHandler = null;
+        clearInterval(voiceRecorderTimer);
+        voiceRecorderTimer = null;
+        voiceRecorderStream.getTracks().forEach((track) => track.stop());
+        voiceRecorderStream = null;
+        const recorded = new Blob(voiceRecorderChunks, { type: voiceRecorder.mimeType });
+        voiceRecorder = null;
+        let context = null;
+        try {
+          if (!window.AudioContext) throw new Error("Audio decoding is unavailable.");
+          context = new window.AudioContext();
+          const decoded = await context.decodeAudioData(await recorded.arrayBuffer());
+          const wav = encodeVoiceSampleWav(decoded);
+          setVoiceSample(new window.File([wav], "voice-sample.wav", { type: "audio/wav" }));
+          if (status) status.textContent = "Gravação pronta como WAV mono. Revise e envie quando estiver satisfeito.";
+        } catch (_error) {
+          if (status) status.textContent = "Não foi possível converter a gravação. Tente gravar novamente ou envie um arquivo compatível.";
+        } finally {
+          if (context) await context.close();
+          const recordButton = document.querySelector('[data-action="start-voice-recording"]');
+          if (recordButton) recordButton.disabled = false;
+        }
+      };
+      voiceRecorder.addEventListener("stop", voiceRecorderStopHandler, { once: true });
+      voiceRecorder.start(250);
+      let elapsed = 0;
+      const start = document.querySelector('[data-action="start-voice-recording"]');
+      const stop = document.querySelector('[data-action="stop-voice-recording"]');
+      if (start) start.hidden = true;
+      if (stop) stop.hidden = false;
+      if (status) status.textContent = "Gravando… máximo de 60 segundos.";
+      voiceRecorderTimer = setInterval(() => {
+        elapsed += 1;
+        if (status) status.textContent = `Gravando… ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")} / 1:00`;
+        if (elapsed >= 60) stopVoiceRecording();
+      }, 1000);
+    } catch (error) {
+      if (voiceRecorderStream) voiceRecorderStream.getTracks().forEach((track) => track.stop());
+      voiceRecorderStream = null;
+      if (status) status.textContent = error.name === "NotAllowedError"
+        ? "Permita o acesso ao microfone para gravar."
+        : error.message;
+    }
+  }
+
+  function stopVoiceRecording() {
+    if (voiceRecorder && voiceRecorder.state !== "inactive") voiceRecorder.stop();
+    const start = document.querySelector('[data-action="start-voice-recording"]');
+    const stop = document.querySelector('[data-action="stop-voice-recording"]');
+    if (start) {
+      start.hidden = false;
+      start.disabled = true;
+    }
+    if (stop) stop.hidden = true;
+  }
+
+  function discardVoiceRecording() {
+    clearInterval(voiceRecorderTimer);
+    voiceRecorderTimer = null;
+    if (voiceRecorder) {
+      if (voiceRecorderStopHandler) voiceRecorder.removeEventListener("stop", voiceRecorderStopHandler);
+      if (voiceRecorder.state !== "inactive") voiceRecorder.stop();
+    }
+    if (voiceRecorderStream) voiceRecorderStream.getTracks().forEach((track) => track.stop());
+    voiceRecorder = null;
+    voiceRecorderStream = null;
+    voiceRecorderChunks = [];
+    voiceRecorderStopHandler = null;
+  }
+
+  async function pollVoiceCloneJob(jobId) {
+    clearTimeout(voiceClonePollTimer);
+    const status = document.getElementById("voice-clone-status");
+    const submit = document.querySelector('#voice-clone-form button[type="submit"]');
+    if (submit) submit.disabled = true;
+    if (!status || currentRoute !== "#voices") return;
+    try {
+      const { job } = await api.voiceCloneJob(jobId);
+      if (job.status === "completed") {
+        window.sessionStorage.removeItem("voiceCloneJobId");
+        const visibility = job.visibility === "private" ? "privada" : `visibilidade ${job.visibility || "não informada"}`;
+        if (currentRoute === "#voices") {
+          await loadRoute();
+          showNotice(`Voz criada e registrada localmente (ID ${job.fish_audio_id}; ${visibility}).`);
+        }
+        return;
+      }
+      if (job.status === "failed") {
+        window.sessionStorage.removeItem("voiceCloneJobId");
+        status.textContent = job.error_message || "Não foi possível criar a voz.";
+        if (submit) submit.disabled = false;
+        return;
+      }
+      status.textContent = job.status === "queued" ? "Aguardando o Codex e o Fish Audio…" : "Criando a voz no Fish Audio…";
+      voiceClonePollTimer = setTimeout(() => pollVoiceCloneJob(jobId), 2000);
+    } catch (error) {
+      window.sessionStorage.removeItem("voiceCloneJobId");
+      status.textContent = error.message;
+      if (submit) submit.disabled = false;
+    }
+  }
+
+  async function cloneVoiceFromSample(event) {
+    event.preventDefault();
+    const form = document.getElementById("voice-clone-form");
+    const status = document.getElementById("voice-clone-status");
+    const submit = form.querySelector('button[type="submit"]');
+    if (!form.reportValidity()) return;
+    if (!voiceSampleFile) {
+      status.textContent = "Escolha um arquivo de áudio ou grave um clipe no microfone.";
+      return;
+    }
+    submit.disabled = true;
+    status.textContent = "Enviando a amostra ao Fish Audio…";
+    try {
+      const result = await api.cloneVoice(voiceSampleFile, {
+        display_name: document.getElementById("voice-clone-name").value,
+        language: document.getElementById("voice-clone-language").value,
+        visibility: document.getElementById("voice-clone-visibility").value,
+        description: "",
+      }, document.getElementById("voice-clone-consent").checked);
+      window.sessionStorage.setItem("voiceCloneJobId", result.job.id);
+      pollVoiceCloneJob(result.job.id);
+    } catch (error) {
+      status.textContent = error.message;
+      submit.disabled = false;
+    }
+  }
+
   view.addEventListener("input", (event) => {
     if (event.target.id === "original-article") {
       const stats = document.getElementById("article-stats");
@@ -668,6 +948,35 @@
     }
   });
   view.addEventListener("change", (event) => {
+    if (event.target.id === "voice-sample-file") {
+      const file = event.target.files && event.target.files[0];
+      const status = document.getElementById("voice-record-status");
+      if (file) {
+        const extension = file.name.split(".").pop().toLowerCase();
+        if (!["wav", "mp3", "m4a", "opus"].includes(extension)) {
+          event.target.value = "";
+          setVoiceSample(null);
+          if (status) status.textContent = "Formato não aceito. Use WAV, MP3, M4A ou OPUS.";
+        } else if (file.size > 50 * 1024 * 1024) {
+          event.target.value = "";
+          setVoiceSample(null);
+          if (status) status.textContent = "O arquivo excede o limite de 50 MiB.";
+        } else {
+          setVoiceSample(file);
+          if (status) status.textContent = "Arquivo selecionado. Confira a transcrição e confirme o envio.";
+        }
+      } else {
+        setVoiceSample(null);
+      }
+    }
+    if (event.target.id === "voice-clone-language") {
+      const script = document.getElementById("voice-clone-script");
+      const previousLanguage = event.target.dataset.scriptLanguage || "pt";
+      if (script && script.value === VOICE_SAMPLE_SCRIPTS[previousLanguage]) {
+        script.value = VOICE_SAMPLE_SCRIPTS[event.target.value];
+      }
+      event.target.dataset.scriptLanguage = event.target.value;
+    }
     if (event.target.id === "interface-language" && scriptReview) {
       captureScriptEditors();
       interfaceLanguage = event.target.value;
@@ -746,11 +1055,16 @@
       }
     }
   });
-  view.addEventListener("submit", (event) => { if (event.target.id === "voice-form") registerVoice(event); });
+  view.addEventListener("submit", (event) => {
+    if (event.target.id === "voice-form") registerVoice(event);
+    if (event.target.id === "voice-clone-form") cloneVoiceFromSample(event);
+  });
   view.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-action]");
     if (!button) return;
     const action = button.dataset.action;
+    if (action === "start-voice-recording") await startVoiceRecording();
+    if (action === "stop-voice-recording") stopVoiceRecording();
     if (action === "review-stage" && scriptReview && !scriptReview.saving) {
       captureScriptEditors();
       scriptReview.stage = button.dataset.stage;
@@ -933,7 +1247,50 @@
         await loadRoute();
       } catch (_error) {
         if (dialog) dialog.close();
-        if (errorBox) errorBox.textContent = document.documentElement.lang === "en" ? "Could not prepare this handoff. Verify the approved script and available voice, then try again. No provider call was made." : "Não foi possível preparar este handoff. Confira o script aprovado e a voz disponível e tente novamente. Nenhuma chamada ao provedor foi feita.";
+        if (errorBox) errorBox.textContent = document.documentElement.lang === "en" ? "Could not prepare the generation request. Verify the approved script and available voice." : "Não foi possível preparar a solicitação de geração. Confira o script aprovado e a voz disponível.";
+        button.disabled = false;
+      }
+    }
+    if (action === "quote-generation") {
+      button.disabled = true;
+      try {
+        const route = currentRoute.slice(1).split("/");
+        await api.quoteGeneration(route[1], button.dataset.id, true);
+        await loadRoute();
+      } catch (error) {
+        const errorBox = document.querySelector(`[data-handoff-error="${CSS.escape(button.dataset.id)}"]`);
+        if (errorBox) errorBox.textContent = error.message;
+        button.disabled = false;
+      }
+    }
+    if (action === "generate-audio") {
+      const dialog = document.getElementById("generation-confirm-dialog");
+      const cost = document.getElementById("generation-confirm-cost");
+      const confirmButton = dialog && dialog.querySelector('[data-action="confirm-audio-generation"]');
+      if (confirmButton) {
+        confirmButton.dataset.id = button.dataset.id;
+        confirmButton.dataset.credits = button.dataset.credits;
+      }
+      if (cost) {
+        const number = Number(button.dataset.credits).toLocaleString(document.documentElement.lang === "en" ? "en-US" : "pt-BR");
+        cost.textContent = document.documentElement.lang === "en"
+          ? `Fish Audio quoted approximately ${number} credits. The final charge may change before generation.`
+          : `O Fish Audio cotou aproximadamente ${number} créditos. O valor final pode mudar antes da geração.`;
+      }
+      if (dialog) dialog.showModal();
+    }
+    if (action === "confirm-audio-generation") {
+      event.preventDefault();
+      button.disabled = true;
+      const dialog = document.getElementById("generation-confirm-dialog");
+      try {
+        const route = currentRoute.slice(1).split("/");
+        await api.generateAudio(route[1], button.dataset.id, true);
+        if (dialog) dialog.close();
+        await loadRoute();
+      } catch (error) {
+        if (dialog) dialog.close();
+        showNotice(`${document.documentElement.lang === "en" ? "Could not start generation. " : "Não foi possível iniciar a geração. "}${error.message}`, "error");
         button.disabled = false;
       }
     }

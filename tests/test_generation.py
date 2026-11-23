@@ -11,8 +11,10 @@ from app import ApiError, Studio, create_app
 
 @pytest.fixture
 def client(tmp_path):
-    app = create_app(tmp_path)
+    return create_test_client(create_app(tmp_path))
 
+
+def create_test_client(app):
     def request(method, path, body=None, content_type="application/json"):
         raw = body if isinstance(body, bytes) else json.dumps(body).encode() if body is not None else b""
         environ = {}
@@ -85,8 +87,81 @@ def test_handoff_requires_exact_approved_script_and_available_selected_voice(cli
     assert handoff["voice_id"] == voice["id"]
     assert handoff["model"] == "drama-3"
     assert handoff["status"] == "prepared"
-    assert "MCP" in handoff["instructions"]
+    assert "Codex" in handoff["instructions"]
     assert client("GET", path)[2]["handoffs"][0]["id"] == handoff["id"]
+
+
+def test_codex_generation_quotes_before_charging_then_imports_result(tmp_path):
+    class FakeCodexAudio:
+        def __init__(self):
+            self.quoted = []
+            self.generated = []
+
+        def quote(self, handoff):
+            self.quoted.append(handoff)
+            return {"estimated_credits": 36, "quote_summary": "36 credits for this script and voice."}
+
+        def generate(self, handoff):
+            self.generated.append(handoff)
+            return b"ID3 generated audio", "audio/mpeg"
+
+    provider = FakeCodexAudio()
+    client = create_test_client(create_app(tmp_path, codex_audio_provider=provider))
+    episode, voice, script = generation_client_from(client)
+    handoff_path = f"/api/episodes/{episode['id']}/generation-handoffs"
+    handoff = client("POST", handoff_path, {"confirm_handoff": True})[2]["handoff"]
+    quote_path = f"{handoff_path}/{handoff['id']}/quote"
+    assert client("POST", quote_path, {})[2]["error"]["code"] == "confirmation_required"
+    assert client("POST", quote_path, {"confirm_quote": True})[0] == 202
+    quoted = wait_for_generation(client, handoff_path, "quoted")
+    assert quoted["estimated_credits"] == 36
+    assert provider.quoted[0]["script"] == script
+    assert provider.quoted[0]["fish_audio_id"] == voice["fish_audio_id"]
+    assert client("POST", f"{handoff_path}/{handoff['id']}/generate", {})[2]["error"]["code"] == "confirmation_required"
+    assert provider.generated == []
+    assert client("POST", f"{handoff_path}/{handoff['id']}/generate",
+                  {"confirm_generation": True})[0] == 202
+    imported = wait_for_generation(client, handoff_path, "imported")
+    assert imported["file_id"]
+    assert provider.generated[0]["script"] == script
+    files = client("GET", f"/api/episodes/{episode['id']}/files")[2]["files"]
+    assert files[0]["id"] == imported["file_id"]
+    assert files[0]["filename"] == "fish-audio-generation.mp3"
+    assert files[0]["approval_status"] == "pending"
+    assert client("GET", f"/api/files/{files[0]['id']}")[2] == b"ID3 generated audio"
+    assert client("POST", quote_path, {"confirm_quote": True})[2]["error"]["code"] == "handoff_not_pending"
+
+
+def generation_client_from(client):
+    episode, voice, script = create_episode_for_client(client)
+    return episode, voice, script
+
+
+def create_episode_for_client(client):
+    episode = create_episode(client, original_article="Source text")
+    _, _, voice = client("POST", "/api/voices", {
+        "display_name": "Narrator", "fish_audio_id": "voice-001", "language": "pt",
+        "availability": "available",
+    })
+    client("PATCH", f"/api/episodes/{episode['id']}", {"selected_voice_id": voice["id"]})
+    script = "[measured]An explicitly approved script."
+    client("PUT", f"/api/episodes/{episode['id']}/scripts/fish-audio", {"content": script})
+    client("POST", f"/api/episodes/{episode['id']}/scripts/fish-audio-approval",
+           {"content": script, "confirm_approval": True})
+    return episode, voice, script
+
+
+def wait_for_generation(client, handoff_path, expected_status):
+    import time
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        run = client("GET", handoff_path)[2]["handoffs"][0]["generation_run"]
+        if run and run["status"] in {expected_status, "failed"}:
+            assert run["status"] == expected_status, run
+            return run
+        time.sleep(0.01)
+    raise AssertionError(f"Generation did not reach {expected_status}")
 
 
 def test_import_is_new_versioned_and_preserves_approved_audio_and_provenance(client, tmp_path, generation_client):
@@ -128,6 +203,20 @@ def test_failed_import_is_retryable_and_validation_does_not_change_handoff_statu
     status, _, record = client("POST", base + "retry.mp3", b"audio", "audio/mpeg")
     assert status == 201
     assert record["approval_status"] == "pending"
+
+
+def test_interrupted_codex_job_is_not_retried_automatically(tmp_path):
+    episode, _, _ = create_episode_for_client(create_test_client(create_app(tmp_path)))
+    studio = Studio(tmp_path)
+    handoff = studio.create_generation_handoff(episode["id"], {"confirm_handoff": True})
+    studio.start_generation_quote(episode["id"], handoff["id"], {"confirm_quote": True})
+
+    restarted = Studio(tmp_path)
+    run = restarted.get_generation_run(handoff["id"])
+    assert run["status"] == "failed"
+    assert run["failure_code"] == "interrupted"
+    with pytest.raises(ApiError, match="already has a quote"):
+        restarted.start_generation_quote(episode["id"], handoff["id"], {"confirm_quote": True})
 
 
 def test_failure_and_audio_review_are_explicit_and_never_delete_audio(client, generation_client):

@@ -2,7 +2,8 @@ import hashlib
 import io
 import json
 import sqlite3
-from urllib.parse import urlsplit
+import time
+from urllib.parse import urlencode, urlsplit
 from wsgiref.util import setup_testing_defaults
 
 import pytest
@@ -64,7 +65,9 @@ def request_app(app, method, path, body=None, content_type="application/json"):
     raw = body if isinstance(body, bytes) else json.dumps(body).encode() if body is not None else b""
     environ = {}
     setup_testing_defaults(environ)
-    environ.update({"REQUEST_METHOD": method, "PATH_INFO": path, "CONTENT_LENGTH": str(len(raw)),
+    parsed = urlsplit(path)
+    environ.update({"REQUEST_METHOD": method, "PATH_INFO": parsed.path, "QUERY_STRING": parsed.query,
+                    "CONTENT_LENGTH": str(len(raw)),
                     "CONTENT_TYPE": content_type, "wsgi.input": io.BytesIO(raw)})
     result = {}
 
@@ -76,6 +79,80 @@ def request_app(app, method, path, body=None, content_type="application/json"):
     if result["headers"].get("Content-Type", "").startswith("application/json"):
         response = json.loads(response)
     return result["status"], result["headers"], response
+
+
+def test_voice_clone_requires_consent_and_registers_result_without_persisting_sample(tmp_path):
+    class FakeFishAudio:
+        def clone_voice(self, sample, filename, **metadata):
+            self.received = (sample, filename, metadata)
+            return {"fish_audio_id": "fish-cloned-voice", "state": "trained", "visibility": "private"}
+
+    provider = FakeFishAudio()
+    app = create_app(tmp_path, codex_audio_provider=provider)
+    sample = b"voice sample bytes"
+    query = urlencode({
+        "consent": "true", "filename": "sample.wav", "display_name": "Narrator",
+        "language": "pt", "visibility": "private", "description": "Warm voice",
+    })
+    status, _, error = request_app(app, "POST", "/api/voices/clone?filename=sample.wav", sample, "audio/wav")
+    assert status == 400
+    assert error["error"]["code"] == "consent_required"
+
+    invalid_visibility = urlencode({
+        "consent": "true", "filename": "sample.wav", "display_name": "Narrator",
+        "language": "pt", "visibility": "unlisted",
+    })
+    status, _, error = request_app(app, "POST", f"/api/voices/clone?{invalid_visibility}", sample, "audio/wav")
+    assert status == 400
+    assert error["error"]["code"] == "invalid_visibility"
+
+    status, _, response = request_app(app, "POST", f"/api/voices/clone?{query}", sample, "audio/wav")
+    assert status == 202
+    assert response["job"]["status"] == "queued"
+    assert "transcript" not in response["job"]
+
+    deadline = time.monotonic() + 2
+    job = response["job"]
+    while time.monotonic() < deadline and job["status"] not in {"completed", "failed"}:
+        time.sleep(0.01)
+        status, _, result = request_app(app, "GET", f"/api/voice-clone-jobs/{job['id']}")
+        assert status == 200
+        job = result["job"]
+
+    assert job["status"] == "completed"
+    assert job["fish_audio_id"] == "fish-cloned-voice"
+    assert job["visibility"] == "private"
+    assert provider.received == (
+        sample, "sample.wav", {
+            "display_name": "Narrator", "visibility": "private",
+        },
+    )
+    voices = Studio(tmp_path).list_voices()
+    assert len(voices) == 1
+    assert voices[0]["fish_audio_id"] == "fish-cloned-voice"
+    assert voices[0]["voice_type"] == "own"
+    assert voices[0]["fish_audio_visibility"] == "private"
+    assert not list((tmp_path / "episodes").rglob("sample.wav"))
+
+
+def test_existing_voices_receive_visibility_column_during_migration(tmp_path):
+    db = sqlite3.connect(tmp_path / "studio.sqlite3")
+    db.execute("""CREATE TABLE voices (
+        id TEXT PRIMARY KEY, display_name TEXT NOT NULL, fish_audio_id TEXT NOT NULL UNIQUE,
+        language TEXT NOT NULL CHECK(language IN ('pt','en')), description TEXT NOT NULL DEFAULT '',
+        voice_type TEXT NOT NULL, availability TEXT NOT NULL, registered_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""")
+    db.execute("""INSERT INTO voices
+        (id,display_name,fish_audio_id,language,voice_type,availability,registered_at,updated_at)
+        VALUES('voice-1','Narrator','fish-voice','pt','own','available','2025-01-01','2025-01-01')""")
+    db.commit()
+    db.close()
+
+    voices = Studio(tmp_path).list_voices()
+
+    assert len(voices) == 1
+    assert voices[0]["fish_audio_visibility"] == ""
 
 
 def test_original_requires_explicit_confirmation_and_preserves_revision(client):

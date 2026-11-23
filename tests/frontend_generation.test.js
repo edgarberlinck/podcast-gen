@@ -33,9 +33,23 @@ async function generationStudio(t, language = "en") {
     updateEpisode: async (_id, changes) => { calls.push(["updateEpisode", changes]); Object.assign(episode, changes); return { ...episode }; },
     prepareGenerationHandoff: async (_id, confirmed) => {
       calls.push(["prepareGenerationHandoff", confirmed]);
-      const handoff = { id: "handoff-2", status: "prepared", voice_name: voices.find((item) => item.id === episode.selected_voice_id).display_name, fish_audio_id: "fish-voice-b", model: "drama-3", script: episode.fish_audio_script, script_sha256: episode.fish_audio_approved_sha256, created_at: "2026-11-18T00:32:00Z" };
+      const handoff = { id: "handoff-2", status: "prepared", generation_run: null, voice_name: voices.find((item) => item.id === episode.selected_voice_id).display_name, fish_audio_id: "fish-voice-b", model: "drama-3", script: episode.fish_audio_script, script_sha256: episode.fish_audio_approved_sha256, created_at: "2026-11-18T00:32:00Z" };
       handoffs.unshift(handoff);
       return { handoff };
+    },
+    quoteGeneration: async (_id, handoffId, confirmed) => {
+      calls.push(["quoteGeneration", handoffId, confirmed]);
+      const handoff = handoffs.find((item) => item.id === handoffId);
+      handoff.generation_run = { status: "quoted", estimated_credits: 36, quote_summary: "36 credits." };
+      return { generation_run: handoff.generation_run };
+    },
+    generateAudio: async (_id, handoffId, confirmed) => {
+      calls.push(["generateAudio", handoffId, confirmed]);
+      const handoff = handoffs.find((item) => item.id === handoffId);
+      handoff.status = "imported";
+      handoff.generation_run.status = "imported";
+      files.unshift({ id: "file-generated", filename: "fish-audio-generation.mp3", size_bytes: 4096, created_at: "2026-11-18T00:33:00Z", approval_status: "pending", voice_name: "Marina", fish_audio_id: handoff.fish_audio_id, model: "drama-3", handoff_id: handoffId, script_sha256: handoff.script_sha256 });
+      return { generation_run: handoff.generation_run };
     },
     reviewAudioFile: async (id, status, confirmed) => {
       calls.push(["reviewAudioFile", id, status, confirmed]);
@@ -50,11 +64,11 @@ async function generationStudio(t, language = "en") {
   return { dom, doc: dom.window.document, calls, episode, files, handoffs };
 }
 
-test("generation review localizes independently, selects only registered voices and retains confirmed files", async (t) => {
+test("Codex requests a quote, generates only after confirmation, and retains reviewed audio", async (t) => {
   const { dom, doc, calls, episode, files, handoffs } = await generationStudio(t);
   assert.equal(doc.documentElement.lang, "en");
-  assert.match(doc.querySelector("h1").textContent, /Prepare and review audio/);
-  assert.match(doc.querySelector(".model-caveat").textContent, /schema/);
+  assert.match(doc.querySelector("h1").textContent, /Generate and review audio/);
+  assert.match(doc.querySelector(".model-caveat").textContent, /fish-audio MCP/);
   assert.equal(doc.querySelectorAll(".audio-version").length, 2);
   assert.match(doc.querySelector(".audio-version-heading").textContent, /Awaiting review/);
   assert.match(doc.body.textContent, /Approved · preserved/);
@@ -69,7 +83,7 @@ test("generation review localizes independently, selects only registered voices 
   doc.querySelector("#generation-language").dispatchEvent(new dom.window.Event("change", { bubbles: true }));
   await tick();
   assert.equal(doc.documentElement.lang, "pt-BR");
-  assert.match(doc.querySelector("h1").textContent, /Preparar e revisar áudio/);
+  assert.match(doc.querySelector("h1").textContent, /Gerar e revisar áudio/);
   assert.match(doc.querySelector("[data-duration-label='file-pending']").textContent, /Duração/);
 
   const voice = doc.querySelector("#generation-voice");
@@ -87,15 +101,30 @@ test("generation review localizes independently, selects only registered voices 
   prepare.click();
   const handoffDialog = doc.querySelector("#handoff-confirm-dialog");
   assert.equal(handoffDialog.open, true);
-  assert.match(handoffDialog.textContent, /Nenhum áudio é gerado aqui/);
+  assert.match(handoffDialog.textContent, /cotação gratuita/);
   assert.equal(calls.some(([name]) => name === "prepareGenerationHandoff"), false);
   handoffDialog.querySelector('[data-action="confirm-handoff"]').click();
   await tick();
   assert.equal(calls.some(([name, confirmed]) => name === "prepareGenerationHandoff" && confirmed === true), true);
   assert.equal(handoffs.length, 1);
-  assert.match(doc.body.textContent, /Aguardando sua ação no Codex/);
+  assert.match(doc.body.textContent, /cotação gratuita/);
 
-  doc.querySelector('[data-action="review-audio"][data-status="approved"]').click();
+  doc.querySelector('[data-action="quote-generation"]').click();
+  await tick();
+  assert.deepEqual(calls.at(-1), ["quoteGeneration", "handoff-2", true]);
+  assert.match(doc.body.textContent, /36 créditos/);
+  doc.querySelector('[data-action="generate-audio"]').click();
+  const generationDialog = doc.querySelector("#generation-confirm-dialog");
+  assert.equal(generationDialog.open, true);
+  assert.match(generationDialog.textContent, /36 créditos/);
+  assert.equal(calls.some(([name]) => name === "generateAudio"), false);
+  generationDialog.querySelector('[data-action="confirm-audio-generation"]').click();
+  await tick();
+  assert.deepEqual(calls.at(-1), ["generateAudio", "handoff-2", true]);
+  assert.equal(files[0].id, "file-generated");
+  assert.match(doc.querySelector("[data-audio-version='file-generated']").textContent, /fish-audio-generation.mp3/);
+
+  doc.querySelector('[data-action="review-audio"][data-id="file-pending"][data-status="approved"]').click();
   const reviewDialog = doc.querySelector("#audio-review-dialog");
   assert.equal(reviewDialog.open, true);
   assert.match(reviewDialog.textContent, /As outras versões permanecem inalteradas/);
@@ -107,7 +136,6 @@ test("generation review localizes independently, selects only registered voices 
   assert.deepEqual(calls.at(-1), ["reviewAudioFile", "file-pending", "approved", true]);
   assert.match(doc.querySelector("[data-audio-version='file-pending']").textContent, /Aprovada · preservada/);
   assert.equal(doc.querySelector('[data-action="review-audio"][data-id="file-pending"]'), null);
-  assert.equal(calls.some(([name]) => /fish|transistor|publish/i.test(name)), false);
 });
 
 test("unavailable voice and unapproved script cannot prepare a handoff; reject keeps the local version", async (t) => {

@@ -2,6 +2,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .coverage
+.env
+.env.*
+!.env.example
 data/
 node_modules/
 playwright-report/
